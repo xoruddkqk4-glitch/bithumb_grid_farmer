@@ -70,3 +70,4 @@ $env:GRID_BOT_PAUSE_REASON='manual live pause'
 - 실거래 중 `GRID_BOT_MOCK_PRICE`를 설정하지 마세요.
 - API 키는 코드, 문서, Git 저장소에 저장하지 마세요.
 - `data/bithumb_settings.json`은 평문 저장 파일입니다. Bithumb API 키에는 출금 권한을 주지 말고, 서버 파일 접근 권한을 제한하세요.
+- Bithumb 일봉은 KST 00:00 기준으로 새로 생성됩니다. 일봉 필터와 오늘 손익 집계는 KST 00:00 경계를 기준으로 확인하세요.

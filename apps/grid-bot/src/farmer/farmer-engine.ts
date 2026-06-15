@@ -9,7 +9,7 @@ import type {
   TradeLogRecord,
 } from "../../../../packages/shared/src/types";
 import type { GridBotConfig } from "../config";
-import type { BithumbPublicClient, PriceQuote } from "../bithumb/bithumb-client";
+import { filterConfirmedDayCandles, type BithumbPublicClient, type PriceQuote } from "../bithumb/bithumb-client";
 import type { JsonlTradeLogger } from "../storage/logger";
 import { evaluateFarmerConfirmedFilters } from "./farmer-filters";
 import { calculateFarmerSizing } from "./farmer-sizing";
@@ -69,7 +69,7 @@ export class FarmerEngine {
             state.farmerUseVolatilityExplosionFilter ?? this.config.farmerUseVolatilityExplosionFilter,
         };
         filterResult = evaluateFarmerConfirmedFilters({
-          candles: await this.publicClient.getDayCandles(state.market, 230),
+          candles: filterConfirmedDayCandles(await this.publicClient.getDayCandles(state.market, 230)),
           config: filterConfig,
           nValue: state.nValue,
         });

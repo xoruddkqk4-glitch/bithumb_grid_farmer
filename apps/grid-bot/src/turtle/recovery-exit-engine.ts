@@ -9,7 +9,7 @@ import type {
   RecoveryTrailingActivationMode,
   TradeLogRecord,
 } from "../../../../packages/shared/src/types";
-import type { BithumbPublicClient, PriceQuote } from "../bithumb/bithumb-client";
+import { filterConfirmedDayCandles, type BithumbPublicClient, type PriceQuote } from "../bithumb/bithumb-client";
 import { sleep } from "../bithumb/rate-limiter";
 import type { GridBotConfig } from "../config";
 import type { JsonlTradeLogger } from "../storage/logger";
@@ -56,9 +56,11 @@ export class RecoveryExitEngine {
     let indicatorError: string | null = null;
     try {
       const indicators = calculateTurtleDailyIndicators(
-        await this.publicClient.getDayCandles(
-          state.market,
-          Math.max(30, settings.nPeriod + 10, settings.lowBreakoutPeriod + 1),
+        filterConfirmedDayCandles(
+          await this.publicClient.getDayCandles(
+            state.market,
+            Math.max(30, settings.nPeriod + 10, settings.lowBreakoutPeriod + 2),
+          ),
         ),
         settings.nPeriod,
         settings.lowBreakoutPeriod,

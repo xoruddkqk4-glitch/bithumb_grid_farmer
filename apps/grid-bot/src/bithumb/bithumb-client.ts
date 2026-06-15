@@ -21,6 +21,24 @@ export interface DayCandle {
   timestamp: string;
 }
 
+export function filterConfirmedDayCandles(candles: DayCandle[], now = new Date()): DayCandle[] {
+  const todayKst = formatKstDateKey(now);
+  return candles.filter((candle) => candle.candleDateTimeKst.slice(0, 10) < todayKst);
+}
+
+function formatKstDateKey(value: Date): string {
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    timeZone: "Asia/Seoul",
+  }).formatToParts(value);
+  const year = parts.find((part) => part.type === "year")?.value ?? "0000";
+  const month = parts.find((part) => part.type === "month")?.value ?? "01";
+  const day = parts.find((part) => part.type === "day")?.value ?? "01";
+  return `${year}-${month}-${day}`;
+}
+
 export class BithumbPublicClient {
   constructor(private readonly options: { mockPrice: number | null }) {}
 

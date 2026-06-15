@@ -393,27 +393,14 @@ function getCurrentTradingDayWindow(): PeriodWindow {
     year: "numeric",
     month: "2-digit",
     day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-    second: "2-digit",
-    hourCycle: "h23",
     timeZone: "Asia/Seoul",
   }).formatToParts(now);
   const readPart = (type: string): number => Number(seoulParts.find((part) => part.type === type)?.value ?? "0");
   const year = readPart("year");
   const month = readPart("month");
   const day = readPart("day");
-  const hour = readPart("hour");
-  const minute = readPart("minute");
-  const afterTradingDayStart = hour > 7 || (hour === 7 && minute >= 1);
-  const start = new Date(Date.UTC(year, month - 1, day, 7 - 9, 1, 0, 0));
-  if (!afterTradingDayStart) {
-    start.setUTCDate(start.getUTCDate() - 1);
-  }
-  const end = new Date(start.getTime());
-  end.setUTCDate(end.getUTCDate() + 1);
-  end.setUTCMinutes(end.getUTCMinutes() - 2);
-  end.setUTCSeconds(59, 999);
+  const start = new Date(Date.UTC(year, month - 1, day, -9, 0, 0, 0));
+  const end = new Date(start.getTime() + 24 * 60 * 60 * 1000 - 1);
   return { start, end };
 }
 
