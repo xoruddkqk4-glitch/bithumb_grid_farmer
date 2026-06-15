@@ -70,6 +70,7 @@ export class FarmerEngine {
         };
         filterResult = evaluateFarmerConfirmedFilters({
           candles: filterConfirmedDayCandles(await this.publicClient.getDayCandles(state.market, 230)),
+          currentPrice: quote.tradePrice,
           config: filterConfig,
         });
     } catch {

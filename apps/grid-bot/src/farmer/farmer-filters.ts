@@ -6,9 +6,11 @@ const MA200_SLOPE_LOOKBACK = 20;
 
 export function evaluateFarmerConfirmedFilters(params: {
   candles: DayCandle[];
+  currentPrice: number;
   config: GridBotConfig;
 }): FarmerFilterResult {
   const candles = params.candles;
+  const currentPrice = params.currentPrice;
   if (candles.length < 220) {
     return { ok: false, blockedReasons: ["INSUFFICIENT_CANDLES"], indicators: null };
   }
@@ -29,10 +31,10 @@ export function evaluateFarmerConfirmedFilters(params: {
   const avg20Turnover = average(candles.slice(-20).map((candle) => candle.candleAccTradePrice));
   const avg5Turnover = average(candles.slice(-5).map((candle) => candle.candleAccTradePrice));
   const closePosition = calculateClosePosition(last);
-  const drawdown3dPct = last.tradePrice / close3dAgo - 1;
+  const drawdown3dPct = currentPrice / close3dAgo - 1;
   const trueRange = calculateTrueRange(last, previous.tradePrice);
   const nValue = calculateAverageTrueRange(candles.slice(-20));
-  const strictMa200Ok = last.tradePrice > ma200Today;
+  const strictMa200Ok = currentPrice > ma200Today;
   const relaxedMa200Ok = ma200Today >= ma200Lookback;
   const twoBullishDailyOk = last.tradePrice > last.openingPrice && previous.tradePrice > previous.openingPrice;
   const capitulation = last.candleAccTradePrice >= avg20Turnover * 3.5 && closePosition < 0.6;
@@ -50,7 +52,7 @@ export function evaluateFarmerConfirmedFilters(params: {
   ) {
     blockedReasons.push("LONG_TREND_BLOCKED");
   }
-  if (params.config.farmerUseMa5TrendFilter && (last.tradePrice <= ma5Today || ma5Today < ma5Yesterday)) {
+  if (params.config.farmerUseMa5TrendFilter && (currentPrice <= ma5Today || ma5Today < ma5Yesterday)) {
     blockedReasons.push("MA5_TREND_BLOCKED");
   }
   if (
@@ -77,6 +79,7 @@ export function evaluateFarmerConfirmedFilters(params: {
 
   const indicators: FarmerIndicators = {
     lastDailyCandle: last,
+    currentPrice,
     ma5Today,
     ma5Yesterday,
     ma200Today,

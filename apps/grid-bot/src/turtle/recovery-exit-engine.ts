@@ -64,6 +64,7 @@ export class RecoveryExitEngine {
         ),
         settings.nPeriod,
         settings.lowBreakoutPeriod,
+        quote.tradePrice,
       );
       nValue = indicators.nValue ?? nValue;
       ma5Exit = indicators.ma5Exit;

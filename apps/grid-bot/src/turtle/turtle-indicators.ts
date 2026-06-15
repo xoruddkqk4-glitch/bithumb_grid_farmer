@@ -4,6 +4,7 @@ export interface TurtleDailyIndicators {
   nValue: number | null;
   ma5: number | null;
   lastClose: number | null;
+  triggerPrice: number | null;
   ma5Exit: boolean;
   lowBreakoutPrice: number | null;
   lowBreakout: boolean;
@@ -13,6 +14,7 @@ export function calculateTurtleDailyIndicators(
   candles: DayCandle[],
   nPeriod: number,
   lowBreakoutPeriod = nPeriod,
+  currentPrice?: number,
 ): TurtleDailyIndicators {
   const safePeriod = Math.max(1, Math.floor(nPeriod));
   const safeLowBreakoutPeriod = Math.max(1, Math.floor(lowBreakoutPeriod));
@@ -20,6 +22,7 @@ export function calculateTurtleDailyIndicators(
   const ma5 = candles.length >= 5 ? average(candles.slice(-5).map((candle) => candle.tradePrice)) : null;
   const nValue = calculateWilderAtr(candles, safePeriod);
   const lastClose = last?.tradePrice ?? null;
+  const triggerPrice = currentPrice ?? lastClose;
   const previousCandles = candles.slice(-(safeLowBreakoutPeriod + 1), -1);
   const lowBreakoutPrice =
     previousCandles.length >= safeLowBreakoutPeriod
@@ -30,9 +33,10 @@ export function calculateTurtleDailyIndicators(
     nValue,
     ma5,
     lastClose,
-    ma5Exit: lastClose != null && ma5 != null ? lastClose < ma5 : false,
+    triggerPrice,
+    ma5Exit: triggerPrice != null && ma5 != null ? triggerPrice < ma5 : false,
     lowBreakoutPrice,
-    lowBreakout: lastClose != null && lowBreakoutPrice != null ? lastClose < lowBreakoutPrice : false,
+    lowBreakout: triggerPrice != null && lowBreakoutPrice != null ? triggerPrice < lowBreakoutPrice : false,
   };
 }
 

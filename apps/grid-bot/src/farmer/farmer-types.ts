@@ -22,6 +22,7 @@ export type FarmerBlockedReason =
 
 export interface FarmerIndicators {
   lastDailyCandle: DayCandle;
+  currentPrice: number;
   ma5Today: number;
   ma5Yesterday: number;
   ma200Today: number;
