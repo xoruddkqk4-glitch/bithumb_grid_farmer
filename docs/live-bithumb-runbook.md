@@ -23,13 +23,17 @@ npm.cmd run grid:build
 
 ## 3. 주문 없는 계좌 연결 확인
 
+대시보드의 Bithumb API 키 패널에서 access key와 secret key를 저장한 뒤 `연결 확인`을 누르면 주문 없이 계좌 조회만 수행합니다. 저장 파일은 기본적으로 `data/bithumb_settings.json`입니다.
+
+CLI에서 직접 확인할 수도 있습니다. 환경변수 키가 있으면 환경변수가 우선이고, 없으면 `data/bithumb_settings.json`을 사용합니다.
+
 ```powershell
 $env:BITHUMB_ACCESS_KEY='your-access-key'
 $env:BITHUMB_SECRET_KEY='your-secret-key'
 npm.cmd run bithumb:account
 ```
 
-이 명령은 주문을 만들지 않고 계좌 조회만 수행합니다.
+이 명령은 주문을 만들지 않고 계좌 조회만 수행합니다. 대시보드에 키를 저장한 경우 `$env:BITHUMB_ACCESS_KEY`, `$env:BITHUMB_SECRET_KEY` 줄은 생략할 수 있습니다.
 
 ## 4. 첫 실거래 1회 루프 예시
 
@@ -65,3 +69,4 @@ $env:GRID_BOT_PAUSE_REASON='manual live pause'
 - 첫 실거래 전에는 `npm.cmd run grid:paper:live`로 현재가 기반 paper 루프를 충분히 확인하세요.
 - 실거래 중 `GRID_BOT_MOCK_PRICE`를 설정하지 마세요.
 - API 키는 코드, 문서, Git 저장소에 저장하지 마세요.
+- `data/bithumb_settings.json`은 평문 저장 파일입니다. Bithumb API 키에는 출금 권한을 주지 말고, 서버 파일 접근 권한을 제한하세요.

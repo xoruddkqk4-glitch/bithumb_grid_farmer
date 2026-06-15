@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import {
   DEFAULT_GRID_GAP_PCT,
@@ -66,6 +67,11 @@ export interface GridBotConfig {
 
 export const REAL_ORDERS_CONFIRM_PHRASE = "I_UNDERSTAND_REAL_BITHUMB_ORDERS";
 
+interface StoredBithumbSettings {
+  accessKey?: unknown;
+  secretKey?: unknown;
+}
+
 function readBool(name: string, defaultValue: boolean): boolean {
   const raw = process.env[name];
   if (raw == null || raw === "") return defaultValue;
@@ -119,15 +125,41 @@ function absolutePath(path: string): string {
   return resolve(process.cwd(), path);
 }
 
+function readStoredBithumbSettings(): { accessKey: string; secretKey: string } {
+  const path = absolutePath(process.env.BITHUMB_SETTINGS_PATH || "data/bithumb_settings.json");
+  try {
+    const parsed = JSON.parse(readFileSync(path, "utf8")) as StoredBithumbSettings;
+    return {
+      accessKey: typeof parsed.accessKey === "string" ? parsed.accessKey.trim() : "",
+      secretKey: typeof parsed.secretKey === "string" ? parsed.secretKey.trim() : "",
+    };
+  } catch (error) {
+    if (isMissingFileError(error)) {
+      return { accessKey: "", secretKey: "" };
+    }
+    throw new Error(`Failed to read Bithumb settings file ${path}: ${String(error)}`);
+  }
+}
+
+function isMissingFileError(error: unknown): boolean {
+  return (
+    typeof error === "object" &&
+    error != null &&
+    "code" in error &&
+    (error as { code?: string }).code === "ENOENT"
+  );
+}
+
 export function loadConfig(): GridBotConfig {
   const botId = process.env.GRID_BOT_ID || "btc-grid-bot";
   const market = process.env.GRID_BOT_MARKET || DEFAULT_MARKET;
+  const storedBithumbSettings = readStoredBithumbSettings();
   const mockPrice = readOptionalNumber("GRID_BOT_MOCK_PRICE");
   const enableRealOrders = readBool("ENABLE_REAL_ORDERS", false);
   const totalCapitalKrw = readNumber("GRID_BOT_TOTAL_CAPITAL_KRW", DEFAULT_TOTAL_CAPITAL_KRW);
   const realOrdersConfirm = process.env.REAL_ORDERS_CONFIRM || "";
-  const bithumbAccessKey = process.env.BITHUMB_ACCESS_KEY || process.env.API_KEY || "";
-  const bithumbSecretKey = process.env.BITHUMB_SECRET_KEY || process.env.SECRET_KEY || "";
+  const bithumbAccessKey = process.env.BITHUMB_ACCESS_KEY || process.env.API_KEY || storedBithumbSettings.accessKey;
+  const bithumbSecretKey = process.env.BITHUMB_SECRET_KEY || process.env.SECRET_KEY || storedBithumbSettings.secretKey;
   const maxRealOrderKrw = readNumber("GRID_BOT_MAX_REAL_ORDER_KRW", 10_000);
   const maxRealTotalCapitalKrw = readNumber("GRID_BOT_MAX_REAL_TOTAL_CAPITAL_KRW", 1_000_000);
 

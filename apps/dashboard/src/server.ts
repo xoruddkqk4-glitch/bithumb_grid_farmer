@@ -3,7 +3,11 @@ import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
-import { DEFAULT_FARMER_ENTRY_PCT, DEFAULT_LOOP_INTERVAL_MS } from "../../../packages/shared/src/constants";
+import {
+  DEFAULT_BITHUMB_FEE_RATE,
+  DEFAULT_FARMER_ENTRY_PCT,
+  DEFAULT_LOOP_INTERVAL_MS,
+} from "../../../packages/shared/src/constants";
 import { roundKrw } from "../../../packages/shared/src";
 import { reconcileBotState } from "../../../packages/shared/src/reconciliation";
 import { BithumbPrivateClient, BithumbPublicClient } from "../../grid-bot/src/bithumb/bithumb-client";
@@ -79,6 +83,7 @@ const botOutLogPath =
   process.env.DASHBOARD_BOT_OUT_LOG_PATH ||
   `${process.env.HOME || "/home/ec2-user"}/.pm2/logs/bithumb-grid-bot-paper-out.log`;
 const telegramSettingsPath = absolutePath(process.env.TELEGRAM_SETTINGS_PATH || "data/telegram_settings.json");
+const bithumbSettingsPath = absolutePath(process.env.BITHUMB_SETTINGS_PATH || "data/bithumb_settings.json");
 const backtestReportsPath = absolutePath(process.env.BACKTEST_REPORTS_PATH || "data/backtests/reports");
 const backtestScriptPath = absolutePath(process.env.BACKTEST_SCRIPT_PATH || "scripts/backtest-btc-daily.cjs");
 const authUser = process.env.DASHBOARD_AUTH_USER || "admin";
@@ -116,6 +121,12 @@ interface TelegramSettings {
   enabled: boolean;
   botToken?: string;
   chatId?: string;
+  updatedAt: string;
+}
+
+interface BithumbCredentialSettings {
+  accessKey?: string;
+  secretKey?: string;
   updatedAt: string;
 }
 
@@ -1023,6 +1034,85 @@ async function updateTelegramSettings(body: string): Promise<{
     enabled: settings.enabled,
     botTokenConfigured: (settings.botToken || process.env.TELEGRAM_BOT_TOKEN || "").length > 0,
     chatIdConfigured: (settings.chatId || process.env.TELEGRAM_CHAT_ID || "").length > 0,
+  };
+}
+
+async function readBithumbCredentialSettings(): Promise<BithumbCredentialSettings> {
+  return (await readJsonFile<BithumbCredentialSettings>(bithumbSettingsPath)) ?? {
+    accessKey: process.env.BITHUMB_ACCESS_KEY || process.env.API_KEY || "",
+    secretKey: process.env.BITHUMB_SECRET_KEY || process.env.SECRET_KEY || "",
+    updatedAt: new Date().toISOString(),
+  };
+}
+
+async function readBithumbCredentialSettingsForClient(): Promise<{
+  accessKeyConfigured: boolean;
+  secretKeyConfigured: boolean;
+  updatedAt: string;
+}> {
+  const settings = await readBithumbCredentialSettings();
+  return {
+    accessKeyConfigured: (settings.accessKey || process.env.BITHUMB_ACCESS_KEY || process.env.API_KEY || "").length > 0,
+    secretKeyConfigured: (settings.secretKey || process.env.BITHUMB_SECRET_KEY || process.env.SECRET_KEY || "").length > 0,
+    updatedAt: settings.updatedAt,
+  };
+}
+
+async function updateBithumbCredentialSettings(body: string): Promise<{
+  ok: true;
+  accessKeyConfigured: boolean;
+  secretKeyConfigured: boolean;
+}> {
+  const parsed = JSON.parse(body) as { accessKey?: unknown; secretKey?: unknown };
+  const current = await readBithumbCredentialSettings();
+  if (parsed.accessKey != null && typeof parsed.accessKey !== "string") {
+    throw new Error("Bithumb access key는 문자열이어야 합니다.");
+  }
+  if (parsed.secretKey != null && typeof parsed.secretKey !== "string") {
+    throw new Error("Bithumb secret key는 문자열이어야 합니다.");
+  }
+
+  const nextAccessKey = typeof parsed.accessKey === "string" && parsed.accessKey.trim().length > 0
+    ? parsed.accessKey.trim()
+    : current.accessKey;
+  const nextSecretKey = typeof parsed.secretKey === "string" && parsed.secretKey.trim().length > 0
+    ? parsed.secretKey.trim()
+    : current.secretKey;
+  const settings: BithumbCredentialSettings = {
+    updatedAt: new Date().toISOString(),
+  };
+  if (nextAccessKey != null) settings.accessKey = nextAccessKey;
+  if (nextSecretKey != null) settings.secretKey = nextSecretKey;
+  await writeJsonAtomic(bithumbSettingsPath, settings);
+
+  return {
+    ok: true,
+    accessKeyConfigured: (settings.accessKey || "").length > 0,
+    secretKeyConfigured: (settings.secretKey || "").length > 0,
+  };
+}
+
+async function testBithumbCredentialSettings(): Promise<{
+  ok: true;
+  accounts: number;
+  nonZeroAccounts: number;
+}> {
+  const settings = await readBithumbCredentialSettings();
+  const accessKey = settings.accessKey || process.env.BITHUMB_ACCESS_KEY || process.env.API_KEY || "";
+  const secretKey = settings.secretKey || process.env.BITHUMB_SECRET_KEY || process.env.SECRET_KEY || "";
+  if (accessKey.length === 0 || secretKey.length === 0) {
+    throw new Error("Bithumb access key와 secret key를 먼저 저장하세요.");
+  }
+  const client = new BithumbPrivateClient({
+    accessKey,
+    secretKey,
+    feeRate: DEFAULT_BITHUMB_FEE_RATE,
+  });
+  const accounts = await client.getAccounts();
+  return {
+    ok: true,
+    accounts: accounts.length,
+    nonZeroAccounts: accounts.filter((account) => account.balance > 0 || account.locked > 0).length,
   };
 }
 
@@ -2029,7 +2119,7 @@ function renderHtml(summary: DashboardSummary, options: ViewOptions): string {
     </div>
     <div class="control-row">
       <a class="button secondary" href="/backtests">백테스트 대시보드</a>
-      <div class="muted">생성 시각 ${formatDate(summary.generatedAt)}</div>
+      <div id="summary-generated-at" class="muted">생성 시각 ${formatDate(summary.generatedAt)}</div>
     </div>
   </header>
   <main>
@@ -2048,51 +2138,60 @@ function renderHtml(summary: DashboardSummary, options: ViewOptions): string {
           <div id="telegram-status" class="form-status">텔레그램 설정은 서버에서 불러옵니다.</div>
         </div>
       </div>
+        <div class="telegram-panel">
+          <div class="telegram-form">
+            <input id="bithumb-access-key" type="password" autocomplete="off" placeholder="Bithumb access key">
+            <input id="bithumb-secret-key" type="password" autocomplete="off" placeholder="Bithumb secret key">
+            <button id="bithumb-save" class="button secondary" type="button">저장</button>
+            <button id="bithumb-test" class="button" type="button">연결 확인</button>
+          </div>
+          <div id="bithumb-status" class="form-status">Bithumb API 키 설정을 서버에서 불러옵니다.</div>
+        </div>
       <div id="log-tail" class="cmd-log"><div id="log-tail-lines" class="log-lines">${commandLogRows || `<div class="empty">아직 PM2 로그가 없습니다. pm2 logs bithumb-grid-bot-paper를 확인하세요.</div>`}</div></div>
     </section>
     <section class="metric-group">
       <div class="metric-group-head">기본 정보</div>
       <div class="metric-row">
         <div class="panel"><div class="metric-label">거래소</div><div class="metric-value">Bithumb</div></div>
-        <div class="panel"><div class="metric-label">마켓</div><div class="metric-value">${escapeHtml(state?.market ?? "-")}</div></div>
+        <div class="panel"><div class="metric-label">마켓</div><div id="market-value" class="metric-value">${escapeHtml(state?.market ?? "-")}</div></div>
         <div class="panel"><div class="metric-label">현재 단계</div><div id="current-phase-value" class="metric-value" data-phase="${escapeHtml(state?.phase ?? "")}">${escapeHtml(formatPhaseKo(state?.phase))}</div></div>
-        <div class="panel"><div class="metric-label">마지막 루프</div><div class="metric-value">${formatDate(state?.lastLoopAt)}</div></div>
+        <div class="panel"><div class="metric-label">마지막 루프</div><div id="last-loop-value" class="metric-value">${formatDate(state?.lastLoopAt)}</div></div>
       </div>
     </section>
     <section class="metric-group">
       <div class="metric-group-head">실현 손익</div>
       <div class="metric-row">
-        <div class="panel ${pnlToneClass(summary.totals.realizedPnlKrw)}"><div class="metric-label">전체 실현 손익</div><div class="metric-value">${formatKrw(summary.totals.realizedPnlKrw)}</div></div>
-        <div class="panel ${pnlToneClass(summary.totals.realizedPnlPct)}"><div class="metric-label">전체 수익률</div><div class="metric-value">${formatPct(summary.totals.realizedPnlPct)}</div></div>
-        <div class="panel ${pnlToneClass(summary.totals.todayRealizedPnlKrw)}"><div class="metric-label">오늘 실현 손익</div><div class="metric-value">${formatKrw(summary.totals.todayRealizedPnlKrw)}</div></div>
-        <div class="panel ${pnlToneClass(summary.totals.todayRealizedPnlPct)}"><div class="metric-label">오늘 수익률</div><div class="metric-value">${formatPct(summary.totals.todayRealizedPnlPct)}</div></div>
+        <div class="panel ${pnlToneClass(summary.totals.realizedPnlKrw)}"><div class="metric-label">전체 실현 손익</div><div id="realized-pnl-krw-value" class="metric-value">${formatKrw(summary.totals.realizedPnlKrw)}</div></div>
+        <div class="panel ${pnlToneClass(summary.totals.realizedPnlPct)}"><div class="metric-label">전체 수익률</div><div id="realized-pnl-pct-value" class="metric-value">${formatPct(summary.totals.realizedPnlPct)}</div></div>
+        <div class="panel ${pnlToneClass(summary.totals.todayRealizedPnlKrw)}"><div class="metric-label">오늘 실현 손익</div><div id="today-realized-pnl-krw-value" class="metric-value">${formatKrw(summary.totals.todayRealizedPnlKrw)}</div></div>
+        <div class="panel ${pnlToneClass(summary.totals.todayRealizedPnlPct)}"><div class="metric-label">오늘 수익률</div><div id="today-realized-pnl-pct-value" class="metric-value">${formatPct(summary.totals.todayRealizedPnlPct)}</div></div>
       </div>
     </section>
     <section class="metric-group">
       <div class="metric-group-head">보유 현황</div>
       <div class="metric-row">
-        <div class="panel"><div class="metric-label">보유 원금</div><div class="metric-value">${formatKrw(summary.totals.holdingCostKrw)}</div></div>
-        <div class="panel"><div class="metric-label">평가 금액</div><div class="metric-value">${formatKrw(summary.totals.holdingValueKrw)}</div></div>
-        <div class="panel ${pnlToneClass(summary.totals.holdingPnlKrw)}"><div class="metric-label">평가 손익</div><div class="metric-value">${formatKrw(summary.totals.holdingPnlKrw)}</div></div>
-        <div class="panel ${pnlToneClass(summary.totals.holdingPnlPct)}"><div class="metric-label">평가 수익률</div><div class="metric-value">${formatPct(summary.totals.holdingPnlPct)}</div></div>
+        <div class="panel"><div class="metric-label">보유 원금</div><div id="holding-cost-value" class="metric-value">${formatKrw(summary.totals.holdingCostKrw)}</div></div>
+        <div class="panel"><div class="metric-label">평가 금액</div><div id="holding-value-value" class="metric-value">${formatKrw(summary.totals.holdingValueKrw)}</div></div>
+        <div class="panel ${pnlToneClass(summary.totals.holdingPnlKrw)}"><div class="metric-label">평가 손익</div><div id="holding-pnl-krw-value" class="metric-value">${formatKrw(summary.totals.holdingPnlKrw)}</div></div>
+        <div class="panel ${pnlToneClass(summary.totals.holdingPnlPct)}"><div class="metric-label">평가 수익률</div><div id="holding-pnl-pct-value" class="metric-value">${formatPct(summary.totals.holdingPnlPct)}</div></div>
       </div>
     </section>
     <section class="metric-group">
       <div class="metric-group-head">그리드 상태</div>
       <div class="metric-row">
-        <div class="panel"><div class="metric-label">현재가</div><div class="metric-value">${formatKrw(state?.lastPrice)}</div></div>
-        <div class="panel"><div class="metric-label">다음 그리드 진입가</div><div class="metric-value">${formatKrw(nextGridEntry)}</div></div>
-        <div class="panel"><div class="metric-label">레이어 상태</div><div class="metric-value">${waitingLayerCount} / ${summary.totals.openLayers}</div><div class="muted">대기 / 보유</div></div>
-        <div class="panel"><div class="metric-label">매수 / 매도 횟수</div><div class="metric-value">${summary.totals.buyCount} / ${summary.totals.sellCount}</div></div>
+        <div class="panel"><div class="metric-label">현재가</div><div class="metric-value js-last-price">${formatKrw(state?.lastPrice)}</div></div>
+        <div class="panel"><div class="metric-label">다음 그리드 진입가</div><div id="next-grid-entry-value" class="metric-value">${formatKrw(nextGridEntry)}</div></div>
+        <div class="panel"><div class="metric-label">레이어 상태</div><div id="layer-status-value" class="metric-value">${waitingLayerCount} / ${summary.totals.openLayers}</div><div class="muted">대기 / 보유</div></div>
+        <div class="panel"><div class="metric-label">매수 / 매도 횟수</div><div id="trade-count-value" class="metric-value">${summary.totals.buyCount} / ${summary.totals.sellCount}</div></div>
       </div>
     </section>
     <section class="metric-group">
       <div class="metric-group-head">농부 상태</div>
       <div class="metric-row">
-        <div class="panel"><div class="metric-label">현재가</div><div class="metric-value">${formatKrw(state?.lastPrice)}</div></div>
-        <div class="panel"><div class="metric-label">직전 매수가</div><div class="metric-value">${formatKrw(farmerLastBuyPrice)}</div></div>
-        <div class="panel ${enabledToneClass(farmerUsePriceReachedFilter)}"><div class="metric-label">다음 농부 진입가</div><div class="metric-value">${formatKrw(nextFarmerEntryPrice)}</div><div class="muted">필요 하락률 -${(farmerEntryPct * 100).toFixed(2)}%</div></div>
-        <div class="panel"><div class="metric-label">농부 차수</div><div class="metric-value">${state?.farmerStage ?? 0} / ${maxFarmerStages}</div></div>
+        <div class="panel"><div class="metric-label">현재가</div><div class="metric-value js-last-price">${formatKrw(state?.lastPrice)}</div></div>
+        <div class="panel"><div class="metric-label">직전 매수가</div><div id="farmer-last-buy-price-value" class="metric-value">${formatKrw(farmerLastBuyPrice)}</div></div>
+        <div class="panel ${enabledToneClass(farmerUsePriceReachedFilter)}"><div class="metric-label">다음 농부 진입가</div><div id="next-farmer-entry-value" class="metric-value">${formatKrw(nextFarmerEntryPrice)}</div><div id="farmer-entry-pct-muted" class="muted">필요 하락률 -${(farmerEntryPct * 100).toFixed(2)}%</div></div>
+        <div class="panel"><div class="metric-label">농부 차수</div><div id="farmer-stage-value" class="metric-value">${state?.farmerStage ?? 0} / ${maxFarmerStages}</div></div>
       </div>
     </section>
     <section class="insight-grid section">
@@ -2314,6 +2413,26 @@ function renderHtml(summary: DashboardSummary, options: ViewOptions): string {
     const logTailLines = document.getElementById("log-tail-lines");
     const currentPhaseValue = document.getElementById("current-phase-value");
     let currentDashboardPhase = currentPhaseValue ? currentPhaseValue.dataset.phase || "" : "";
+    const liveMetricIds = {
+      generatedAt: "summary-generated-at",
+      market: "market-value",
+      lastLoopAt: "last-loop-value",
+      realizedPnlKrw: "realized-pnl-krw-value",
+      realizedPnlPct: "realized-pnl-pct-value",
+      todayRealizedPnlKrw: "today-realized-pnl-krw-value",
+      todayRealizedPnlPct: "today-realized-pnl-pct-value",
+      holdingCost: "holding-cost-value",
+      holdingValue: "holding-value-value",
+      holdingPnlKrw: "holding-pnl-krw-value",
+      holdingPnlPct: "holding-pnl-pct-value",
+      nextGridEntry: "next-grid-entry-value",
+      layerStatus: "layer-status-value",
+      tradeCount: "trade-count-value",
+      farmerLastBuyPrice: "farmer-last-buy-price-value",
+      nextFarmerEntry: "next-farmer-entry-value",
+      farmerEntryPctMuted: "farmer-entry-pct-muted",
+      farmerStage: "farmer-stage-value",
+    };
     const gridSettingsForm = document.getElementById("grid-settings-form");
     const gridSettingsSubmitButton = document.getElementById("grid-settings-submit");
     const gridSettingsStatus = document.getElementById("grid-settings-status");
@@ -2365,6 +2484,11 @@ function renderHtml(summary: DashboardSummary, options: ViewOptions): string {
     const telegramToggle = document.getElementById("telegram-toggle");
     const telegramTest = document.getElementById("telegram-test");
     const telegramStatus = document.getElementById("telegram-status");
+    const bithumbAccessKeyInput = document.getElementById("bithumb-access-key");
+    const bithumbSecretKeyInput = document.getElementById("bithumb-secret-key");
+    const bithumbSave = document.getElementById("bithumb-save");
+    const bithumbTest = document.getElementById("bithumb-test");
+    const bithumbStatus = document.getElementById("bithumb-status");
     const emptyLogMessage = "No grid bot PM2 log lines yet. Check pm2 logs bithumb-grid-bot-paper.";
     let telegramEnabled = true;
 
@@ -2388,6 +2512,143 @@ function renderHtml(summary: DashboardSummary, options: ViewOptions): string {
         .replaceAll("'", "&#39;");
     }
 
+    function textOrDash(value) {
+      return value == null || value === "" ? "-" : String(value);
+    }
+
+    function setMetricText(id, value) {
+      const element = document.getElementById(id);
+      if (element) element.textContent = textOrDash(value);
+    }
+
+    function setMetricTextAll(selector, value) {
+      document.querySelectorAll(selector).forEach((element) => {
+        element.textContent = textOrDash(value);
+      });
+    }
+
+    function setPanelTone(id, value) {
+      const element = document.getElementById(id);
+      const panel = element ? element.closest(".panel") : null;
+      if (!panel) return;
+      panel.classList.remove("tone-profit", "tone-loss");
+      if (!Number.isFinite(value) || value === 0) return;
+      panel.classList.add(value > 0 ? "tone-profit" : "tone-loss");
+    }
+
+    function formatDate(value) {
+      if (!value) return "-";
+      const date = new Date(value);
+      if (Number.isNaN(date.getTime())) return "-";
+      return new Intl.DateTimeFormat("ko-KR", {
+        dateStyle: "short",
+        timeStyle: "medium",
+        timeZone: "Asia/Seoul",
+      }).format(date);
+    }
+
+    function formatPct(value) {
+      return Number.isFinite(value) ? value.toFixed(2) + "%" : "-";
+    }
+
+    function formatPhaseKo(value) {
+      if (value === "GRID") return "그리드";
+      if (value === "FARMING") return "농부 매수";
+      if (value === "HOLDING") return "보유";
+      if (value === "COOLDOWN") return "쿨다운";
+      return value || "-";
+    }
+
+    function getNextGridEntry(layers) {
+      if (!Array.isArray(layers)) return null;
+      const nextLayer = layers
+        .filter((layer) => layer && (layer.status === "WAITING" || layer.status === "SOLD"))
+        .sort((left, right) => Number(left.idx || 0) - Number(right.idx || 0))[0];
+      return nextLayer && Number.isFinite(Number(nextLayer.buyPrice)) ? Number(nextLayer.buyPrice) : null;
+    }
+
+    function getLastGridBuyPrice(state) {
+      const layers = state && Array.isArray(state.layers) ? state.layers : [];
+      if (!layers.length) return null;
+      const activeLayer = layers
+        .filter((layer) => layer && (Number(layer.qty || 0) > 0 || layer.status === "OPEN"))
+        .sort((left, right) => Number(right.idx || 0) - Number(left.idx || 0))[0];
+      const fallbackLayer = layers
+        .slice()
+        .sort((left, right) => Number(right.idx || 0) - Number(left.idx || 0))[0];
+      const layer = activeLayer || fallbackLayer;
+      if (!layer) return null;
+      const qty = Number(layer.qty || 0);
+      const amountKrw = Number(layer.amountKrw || 0);
+      if (qty > 0 && amountKrw > 0) return amountKrw / qty;
+      const buyPrice = Number(layer.buyPrice);
+      return Number.isFinite(buyPrice) && buyPrice > 0 ? buyPrice : null;
+    }
+
+    function getFarmerLastBuyPrice(state) {
+      if (!state) return null;
+      if (Number(state.farmerStage || 0) === 0) {
+        return state.farmerAnchorPrice ?? getLastGridBuyPrice(state);
+      }
+      return state.farmerAnchorPrice ?? state.farmerLastBuyPrice ?? null;
+    }
+
+    function getFarmerEntryPct(state) {
+      const stateValue = Number(state && state.farmerEntryPct);
+      if (Number.isFinite(stateValue)) return stateValue;
+      const inputValue = Number(farmerEntryPctInput ? farmerEntryPctInput.value : NaN);
+      return Number.isFinite(inputValue) ? inputValue / 100 : 0.1;
+    }
+
+    function getNextFarmerEntryPrice(state, farmerEntryPct) {
+      if (!state) return null;
+      const maxFarmerStages = Number.isFinite(Number(state.maxFarmerStages)) ? Number(state.maxFarmerStages) : 3;
+      if (Number(state.farmerStage || 0) >= maxFarmerStages) return null;
+      const lastBuyPrice = getFarmerLastBuyPrice(state);
+      return Number.isFinite(lastBuyPrice) ? lastBuyPrice * (1 - farmerEntryPct) : null;
+    }
+
+    function refreshLiveMetrics(summary) {
+      const state = summary && summary.state ? summary.state : null;
+      const totals = summary && summary.totals ? summary.totals : {};
+      const farmerEntryPct = getFarmerEntryPct(state);
+      const maxFarmerStages = Number.isFinite(Number(state && state.maxFarmerStages)) ? Number(state.maxFarmerStages) : 3;
+
+      setMetricText(liveMetricIds.generatedAt, "생성 시각 " + formatDate(summary ? summary.generatedAt : null));
+      setMetricText(liveMetricIds.market, state ? state.market : "-");
+      if (currentPhaseValue) {
+        currentPhaseValue.dataset.phase = state ? String(state.phase || "") : "";
+        currentPhaseValue.textContent = formatPhaseKo(state ? state.phase : null);
+      }
+      setMetricText(liveMetricIds.lastLoopAt, formatDate(state ? state.lastLoopAt : null));
+      setMetricTextAll(".js-last-price", formatKrw(state ? state.lastPrice : null));
+
+      setMetricText(liveMetricIds.realizedPnlKrw, formatKrw(totals.realizedPnlKrw));
+      setMetricText(liveMetricIds.realizedPnlPct, formatPct(totals.realizedPnlPct));
+      setMetricText(liveMetricIds.todayRealizedPnlKrw, formatKrw(totals.todayRealizedPnlKrw));
+      setMetricText(liveMetricIds.todayRealizedPnlPct, formatPct(totals.todayRealizedPnlPct));
+      setPanelTone(liveMetricIds.realizedPnlKrw, Number(totals.realizedPnlKrw));
+      setPanelTone(liveMetricIds.realizedPnlPct, Number(totals.realizedPnlPct));
+      setPanelTone(liveMetricIds.todayRealizedPnlKrw, Number(totals.todayRealizedPnlKrw));
+      setPanelTone(liveMetricIds.todayRealizedPnlPct, Number(totals.todayRealizedPnlPct));
+
+      setMetricText(liveMetricIds.holdingCost, formatKrw(totals.holdingCostKrw));
+      setMetricText(liveMetricIds.holdingValue, formatKrw(totals.holdingValueKrw));
+      setMetricText(liveMetricIds.holdingPnlKrw, formatKrw(totals.holdingPnlKrw));
+      setMetricText(liveMetricIds.holdingPnlPct, formatPct(totals.holdingPnlPct));
+      setPanelTone(liveMetricIds.holdingPnlKrw, Number(totals.holdingPnlKrw));
+      setPanelTone(liveMetricIds.holdingPnlPct, Number(totals.holdingPnlPct));
+
+      const waitingLayerCount = Number(totals.waitingLayers || 0) + Number(totals.soldLayers || 0);
+      setMetricText(liveMetricIds.nextGridEntry, formatKrw(getNextGridEntry(state ? state.layers : [])));
+      setMetricText(liveMetricIds.layerStatus, waitingLayerCount + " / " + Number(totals.openLayers || 0));
+      setMetricText(liveMetricIds.tradeCount, Number(totals.buyCount || 0) + " / " + Number(totals.sellCount || 0));
+      setMetricText(liveMetricIds.farmerLastBuyPrice, formatKrw(getFarmerLastBuyPrice(state)));
+      setMetricText(liveMetricIds.nextFarmerEntry, formatKrw(getNextFarmerEntryPrice(state, farmerEntryPct)));
+      setMetricText(liveMetricIds.farmerEntryPctMuted, "필요 하락률 -" + (farmerEntryPct * 100).toFixed(2) + "%");
+      setMetricText(liveMetricIds.farmerStage, Number(state && state.farmerStage || 0) + " / " + maxFarmerStages);
+    }
+
     async function refreshLogTail() {
       try {
         const response = await fetch("/api/summary", { cache: "no-store" });
@@ -2399,6 +2660,7 @@ function renderHtml(summary: DashboardSummary, options: ViewOptions): string {
           return;
         }
         currentDashboardPhase = nextPhase || currentDashboardPhase;
+        refreshLiveMetrics(summary);
         const lines = Array.isArray(summary.botLogLines) ? summary.botLogLines : [];
         const nextHtml = lines.length > 0
           ? lines.map((line) => "<div>" + escapeHtml(line) + "</div>").join("")
@@ -2795,7 +3057,67 @@ function renderHtml(summary: DashboardSummary, options: ViewOptions): string {
       }
     });
 
+    async function loadBithumbSettings() {
+      try {
+        const response = await fetch("/api/bithumb-settings", { cache: "no-store" });
+        const result = await response.json();
+        if (!response.ok) throw new Error(result.error || "Bithumb API 키 설정을 불러오지 못했습니다.");
+        bithumbAccessKeyInput.value = "";
+        bithumbSecretKeyInput.value = "";
+        bithumbAccessKeyInput.placeholder = result.accessKeyConfigured ? "Bithumb access key 저장됨" : "Bithumb access key";
+        bithumbSecretKeyInput.placeholder = result.secretKeyConfigured ? "Bithumb secret key 저장됨" : "Bithumb secret key";
+        bithumbStatus.textContent =
+          result.accessKeyConfigured && result.secretKeyConfigured
+            ? "Bithumb API 키가 저장되어 있습니다. 저장된 값은 화면에 다시 표시하지 않습니다."
+            : "Bithumb API 키를 저장하면 봇이 환경변수 대신 이 값을 사용할 수 있습니다.";
+      } catch (error) {
+        bithumbStatus.textContent = error instanceof Error ? error.message : String(error);
+      }
+    }
+
+    bithumbSave.addEventListener("click", async () => {
+      bithumbSave.disabled = true;
+      bithumbStatus.textContent = "Bithumb API 키를 저장하는 중...";
+      try {
+        const response = await fetch("/api/bithumb-settings", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            accessKey: bithumbAccessKeyInput.value,
+            secretKey: bithumbSecretKeyInput.value,
+          }),
+        });
+        const result = await response.json();
+        if (!response.ok) throw new Error(result.error || "Bithumb API 키 저장에 실패했습니다.");
+        bithumbAccessKeyInput.value = "";
+        bithumbSecretKeyInput.value = "";
+        bithumbAccessKeyInput.placeholder = result.accessKeyConfigured ? "Bithumb access key 저장됨" : "Bithumb access key";
+        bithumbSecretKeyInput.placeholder = result.secretKeyConfigured ? "Bithumb secret key 저장됨" : "Bithumb secret key";
+        bithumbStatus.textContent = "Bithumb API 키를 저장했습니다. 실행 중인 봇에는 재시작 후 반영됩니다.";
+      } catch (error) {
+        bithumbStatus.textContent = error instanceof Error ? error.message : String(error);
+      } finally {
+        bithumbSave.disabled = false;
+      }
+    });
+
+    bithumbTest.addEventListener("click", async () => {
+      bithumbTest.disabled = true;
+      bithumbStatus.textContent = "Bithumb 계좌 조회로 연결을 확인하는 중...";
+      try {
+        const response = await fetch("/api/bithumb-test", { method: "POST" });
+        const result = await response.json();
+        if (!response.ok) throw new Error(result.error || "Bithumb 연결 확인에 실패했습니다.");
+        bithumbStatus.textContent = "Bithumb 연결 확인 완료: 계좌 " + result.accounts + "개, 보유/잠김 잔고 " + result.nonZeroAccounts + "개";
+      } catch (error) {
+        bithumbStatus.textContent = error instanceof Error ? error.message : String(error);
+      } finally {
+        bithumbTest.disabled = false;
+      }
+    });
+
     loadTelegramSettings();
+    loadBithumbSettings();
 
     gridSettingsForm.addEventListener("submit", async (event) => {
       event.preventDefault();
@@ -3512,8 +3834,18 @@ const server = createServer(async (request, response) => {
       return;
     }
 
+    if (request.method === "POST" && request.url === "/api/bithumb-settings") {
+      sendJson(response, 200, await updateBithumbCredentialSettings(await readRequestBody(request)));
+      return;
+    }
+
     if (request.method === "POST" && request.url === "/api/telegram-test") {
       sendJson(response, 200, await sendTelegramTestMessage());
+      return;
+    }
+
+    if (request.method === "POST" && request.url === "/api/bithumb-test") {
+      sendJson(response, 200, await testBithumbCredentialSettings());
       return;
     }
 
@@ -3535,6 +3867,11 @@ const server = createServer(async (request, response) => {
 
     if (url === "/api/telegram-settings") {
       sendJson(response, 200, await readTelegramSettingsForClient());
+      return;
+    }
+
+    if (url === "/api/bithumb-settings") {
+      sendJson(response, 200, await readBithumbCredentialSettingsForClient());
       return;
     }
 
