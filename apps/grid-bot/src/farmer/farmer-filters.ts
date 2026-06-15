@@ -7,7 +7,6 @@ const MA200_SLOPE_LOOKBACK = 20;
 export function evaluateFarmerConfirmedFilters(params: {
   candles: DayCandle[];
   config: GridBotConfig;
-  nValue: number | null;
 }): FarmerFilterResult {
   const candles = params.candles;
   if (candles.length < 220) {
@@ -32,7 +31,7 @@ export function evaluateFarmerConfirmedFilters(params: {
   const closePosition = calculateClosePosition(last);
   const drawdown3dPct = last.tradePrice / close3dAgo - 1;
   const trueRange = calculateTrueRange(last, previous.tradePrice);
-  const nValue = params.nValue ?? calculateAverageTrueRange(candles.slice(-20));
+  const nValue = calculateAverageTrueRange(candles.slice(-20));
   const strictMa200Ok = last.tradePrice > ma200Today;
   const relaxedMa200Ok = ma200Today >= ma200Lookback;
   const twoBullishDailyOk = last.tradePrice > last.openingPrice && previous.tradePrice > previous.openingPrice;

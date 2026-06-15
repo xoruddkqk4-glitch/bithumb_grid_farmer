@@ -71,7 +71,6 @@ export class FarmerEngine {
         filterResult = evaluateFarmerConfirmedFilters({
           candles: filterConfirmedDayCandles(await this.publicClient.getDayCandles(state.market, 230)),
           config: filterConfig,
-          nValue: state.nValue,
         });
     } catch {
       filterResult = {

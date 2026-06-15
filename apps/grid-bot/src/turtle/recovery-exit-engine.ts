@@ -49,7 +49,7 @@ export class RecoveryExitEngine {
 
     const settings = resolveRecoveryTurtleSettings(state, this.config);
     const highestPrice = Math.max(state.highestPrice || quote.tradePrice, quote.tradePrice);
-    let nValue = state.nValue;
+    let nValue: number | null = null;
     let ma5Exit = false;
     let lowBreakout = false;
     let lowBreakoutPrice: number | null = null;
