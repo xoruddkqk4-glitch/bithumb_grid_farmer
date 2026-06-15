@@ -9,7 +9,7 @@ import {
   DEFAULT_LOOP_INTERVAL_MS,
   DEFAULT_MARKET,
 } from "../../../packages/shared/src/constants";
-import { calculateBuyQty, roundKrw } from "../../../packages/shared/src";
+import { roundKrw } from "../../../packages/shared/src";
 import { reconcileBotState } from "../../../packages/shared/src/reconciliation";
 import { BithumbPrivateClient, BithumbPublicClient } from "../../grid-bot/src/bithumb/bithumb-client";
 import { loadConfig } from "../../grid-bot/src/config";
@@ -129,7 +129,17 @@ interface TelegramSettings {
 interface BithumbCredentialSettings {
   accessKey?: string;
   secretKey?: string;
+  lastLiveTestBuy?: BithumbLiveTestBuyRecord;
   updatedAt: string;
+}
+
+interface BithumbLiveTestBuyRecord {
+  market: string;
+  qty: number;
+  amountKrw: number;
+  price: number;
+  orderId: string;
+  executedAt: string;
 }
 
 interface PeriodWindow {
@@ -1037,12 +1047,19 @@ async function readBithumbCredentialSettings(): Promise<BithumbCredentialSetting
 async function readBithumbCredentialSettingsForClient(): Promise<{
   accessKeyConfigured: boolean;
   secretKeyConfigured: boolean;
+  lastLiveTestBuyQty: number | null;
+  lastLiveTestBuyMarket: string | null;
+  lastLiveTestBuyExecutedAt: string | null;
   updatedAt: string;
 }> {
   const settings = await readBithumbCredentialSettings();
+  const lastLiveTestBuy = normalizeBithumbLiveTestBuy(settings.lastLiveTestBuy);
   return {
     accessKeyConfigured: (settings.accessKey || process.env.BITHUMB_ACCESS_KEY || process.env.API_KEY || "").length > 0,
     secretKeyConfigured: (settings.secretKey || process.env.BITHUMB_SECRET_KEY || process.env.SECRET_KEY || "").length > 0,
+    lastLiveTestBuyQty: lastLiveTestBuy?.qty ?? null,
+    lastLiveTestBuyMarket: lastLiveTestBuy?.market ?? null,
+    lastLiveTestBuyExecutedAt: lastLiveTestBuy?.executedAt ?? null,
     updatedAt: settings.updatedAt,
   };
 }
@@ -1080,6 +1097,10 @@ async function updateBithumbCredentialSettings(body: string): Promise<{
   };
   if (nextAccessKey != null) settings.accessKey = nextAccessKey;
   if (nextSecretKey != null) settings.secretKey = nextSecretKey;
+  const currentLiveTestBuy = normalizeBithumbLiveTestBuy(current.lastLiveTestBuy);
+  if (currentLiveTestBuy != null) {
+    settings.lastLiveTestBuy = currentLiveTestBuy;
+  }
   await writeJsonAtomic(bithumbSettingsPath, settings);
 
   return {
@@ -1120,6 +1141,7 @@ async function executeBithumbLiveTestOrder(body: string): Promise<{
   qty: number;
   price: number;
   executedAt: string;
+  lastLiveTestBuyQty: number | null;
 }> {
   if (!isAuthEnabled()) {
     throw new Error("실시간 테스트 주문은 대시보드 인증을 켠 뒤에만 사용할 수 있습니다.");
@@ -1131,6 +1153,7 @@ async function executeBithumbLiveTestOrder(body: string): Promise<{
     throw new Error("side must be BUY or SELL.");
   }
 
+  const settings = await readBithumbCredentialSettings();
   const { accessKey, secretKey } = await readConfiguredBithumbCredentials();
   if (accessKey.length === 0 || secretKey.length === 0) {
     throw new Error("Bithumb access key와 secret key를 먼저 저장하세요.");
@@ -1138,6 +1161,21 @@ async function executeBithumbLiveTestOrder(body: string): Promise<{
 
   const market = process.env.GRID_BOT_MARKET || DEFAULT_MARKET;
   const publicClient = new BithumbPublicClient({ mockPrice: null });
+  const quote = await publicClient.getCurrentPrice(market);
+  const savedBuy = normalizeBithumbLiveTestBuy(settings.lastLiveTestBuy);
+  const sellQty = side === "SELL" ? savedBuy?.qty ?? null : null;
+  if (side === "SELL") {
+    if (savedBuy == null || sellQty == null || sellQty <= 0) {
+      throw new Error("먼저 10,000원 실시간 매수 테스트를 실행한 뒤, 그 매수 수량만 매도 테스트할 수 있습니다.");
+    }
+    if (savedBuy.market !== market) {
+      throw new Error(`마지막 매수 테스트 마켓(${savedBuy.market})과 현재 마켓(${market})이 다릅니다.`);
+    }
+    const estimatedSellKrw = quote.tradePrice * sellQty;
+    if (estimatedSellKrw > BITHUMB_LIVE_TEST_ORDER_KRW * 1.2) {
+      throw new Error(`테스트 매도 예상 금액이 안전 한도(12,000원)를 초과했습니다. estimated=${roundKrw(estimatedSellKrw)}`);
+    }
+  }
   const privateClient = new BithumbPrivateClient({
     accessKey,
     secretKey,
@@ -1146,9 +1184,8 @@ async function executeBithumbLiveTestOrder(body: string): Promise<{
   const executor = new RealOrderExecutor({
     enabled: true,
     client: privateClient,
-    maxOrderKrw: BITHUMB_LIVE_TEST_ORDER_KRW,
+    maxOrderKrw: side === "SELL" ? BITHUMB_LIVE_TEST_ORDER_KRW * 1.2 : BITHUMB_LIVE_TEST_ORDER_KRW,
   });
-  const quote = await publicClient.getCurrentPrice(market);
   const requestId = randomUUID();
   const execution = side === "BUY"
     ? await executor.buyMarket({
@@ -1160,9 +1197,22 @@ async function executeBithumbLiveTestOrder(body: string): Promise<{
     : await executor.sellMarket({
         market,
         price: quote.tradePrice,
-        qty: calculateBuyQty(BITHUMB_LIVE_TEST_ORDER_KRW, quote.tradePrice),
+        qty: sellQty ?? 0,
         requestId,
       });
+
+  if (side === "BUY") {
+    await writeBithumbLiveTestBuy({
+      market,
+      qty: execution.qty,
+      amountKrw: execution.amountKrw,
+      price: execution.price,
+      orderId: execution.orderId,
+      executedAt: execution.executedAt,
+    });
+  } else {
+    await writeBithumbLiveTestBuy(null);
+  }
 
   return {
     ok: true,
@@ -1173,7 +1223,40 @@ async function executeBithumbLiveTestOrder(body: string): Promise<{
     qty: execution.qty,
     price: execution.price,
     executedAt: execution.executedAt,
+    lastLiveTestBuyQty: side === "BUY" ? execution.qty : null,
   };
+}
+
+function normalizeBithumbLiveTestBuy(record: BithumbCredentialSettings["lastLiveTestBuy"]): BithumbLiveTestBuyRecord | null {
+  if (record == null) return null;
+  if (
+    typeof record.market !== "string" ||
+    typeof record.qty !== "number" ||
+    typeof record.amountKrw !== "number" ||
+    typeof record.price !== "number" ||
+    typeof record.orderId !== "string" ||
+    typeof record.executedAt !== "string"
+  ) {
+    return null;
+  }
+  if (!Number.isFinite(record.qty) || record.qty <= 0) return null;
+  if (!Number.isFinite(record.amountKrw) || record.amountKrw <= 0) return null;
+  if (!Number.isFinite(record.price) || record.price <= 0) return null;
+  return record;
+}
+
+async function writeBithumbLiveTestBuy(record: BithumbLiveTestBuyRecord | null): Promise<void> {
+  const current = await readBithumbCredentialSettings();
+  const settings: BithumbCredentialSettings = {
+    ...current,
+    updatedAt: new Date().toISOString(),
+  };
+  if (record == null) {
+    delete settings.lastLiveTestBuy;
+  } else {
+    settings.lastLiveTestBuy = record;
+  }
+  await writeJsonAtomic(bithumbSettingsPath, settings);
 }
 
 async function sendTelegramTestMessage(): Promise<{ ok: true }> {
@@ -1792,6 +1875,36 @@ function renderHtml(summary: DashboardSummary, options: ViewOptions): string {
     }
     .telegram-form .button { height: 36px; padding: 0 12px; white-space: nowrap; }
     .telegram-panel .form-status { margin-top: 6px; min-height: 16px; font-size: 12px; }
+    .bithumb-form {
+      display: grid;
+      grid-template-columns: minmax(180px, 1fr) minmax(180px, 1fr) auto auto;
+      gap: 8px;
+      align-items: center;
+    }
+    .bithumb-form input {
+      width: 100%;
+      height: 36px;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      padding: 0 9px;
+      font: inherit;
+      font-size: 12px;
+      background: #fff;
+    }
+    .bithumb-form .button { height: 36px; padding: 0 12px; white-space: nowrap; }
+    .bithumb-test-actions {
+      grid-column: 1 / -1;
+      display: grid;
+      grid-template-columns: repeat(2, minmax(180px, 1fr));
+      gap: 8px;
+    }
+    .bithumb-test-actions .button {
+      width: 100%;
+      min-height: 38px;
+      height: 38px;
+    }
+    .button.live-buy { background: #18202a; }
+    .button.live-sell { background: #b42318; }
     .form-status { margin-top: 10px; min-height: 18px; font-size: 13px; color: var(--muted); }
     .metric-label { color: var(--muted); font-size: 12px; margin-bottom: 6px; text-align: center; }
     .metric-value { font-size: 21px; font-weight: 700; overflow-wrap: anywhere; }
@@ -2156,6 +2269,8 @@ function renderHtml(summary: DashboardSummary, options: ViewOptions): string {
       .settings-form { grid-template-columns: repeat(2, minmax(0, 1fr)); }
       .log-head { grid-template-columns: 1fr; }
       .telegram-form { grid-template-columns: 1fr 1fr; }
+      .bithumb-form { grid-template-columns: 1fr 1fr; }
+      .bithumb-test-actions { grid-template-columns: 1fr 1fr; }
       .extension-form { grid-template-columns: 1fr; }
       .funding-preview { grid-template-columns: repeat(3, minmax(0, 1fr)); }
     }
@@ -2167,6 +2282,8 @@ function renderHtml(summary: DashboardSummary, options: ViewOptions): string {
       .strategy-setting-grid { grid-template-columns: 1fr; }
       .settings-form { grid-template-columns: 1fr; }
       .telegram-form { grid-template-columns: 1fr; }
+      .bithumb-form { grid-template-columns: 1fr; }
+      .bithumb-test-actions { grid-template-columns: 1fr; }
       .funding-preview { grid-template-columns: 1fr; }
     }
   </style>
@@ -2199,13 +2316,15 @@ function renderHtml(summary: DashboardSummary, options: ViewOptions): string {
         </div>
       </div>
         <div class="telegram-panel">
-          <div class="telegram-form">
+          <div class="bithumb-form">
             <input id="bithumb-access-key" type="password" autocomplete="off" placeholder="Bithumb access key">
             <input id="bithumb-secret-key" type="password" autocomplete="off" placeholder="Bithumb secret key">
             <button id="bithumb-save" class="button secondary" type="button">저장</button>
             <button id="bithumb-test" class="button" type="button">연결 확인</button>
-            <button id="bithumb-test-buy" class="button" type="button">10,000원 실시간 매수 테스트</button>
-            <button id="bithumb-test-sell" class="button danger" type="button">10,000원 실시간 매도 테스트</button>
+            <div class="bithumb-test-actions">
+              <button id="bithumb-test-buy" class="button live-buy" type="button">10,000원 실시간 매수 테스트</button>
+              <button id="bithumb-test-sell" class="button live-sell" type="button">매수분 실시간 매도 테스트</button>
+            </div>
           </div>
           <div id="bithumb-status" class="form-status">Bithumb API 키 설정을 서버에서 불러옵니다.</div>
         </div>
@@ -2555,6 +2674,8 @@ function renderHtml(summary: DashboardSummary, options: ViewOptions): string {
     const bithumbStatus = document.getElementById("bithumb-status");
     const emptyLogMessage = "No grid bot PM2 log lines yet. Check pm2 logs bithumb-grid-bot-paper.";
     let telegramEnabled = true;
+    let bithumbLastLiveTestBuyQty = 0;
+    let bithumbLastLiveTestBuyMarket = "";
 
     const tradeModal = document.createElement("div");
     tradeModal.className = "modal-backdrop";
@@ -3130,6 +3251,9 @@ function renderHtml(summary: DashboardSummary, options: ViewOptions): string {
         bithumbSecretKeyInput.value = "";
         bithumbAccessKeyInput.placeholder = result.accessKeyConfigured ? "Bithumb access key 저장됨" : "Bithumb access key";
         bithumbSecretKeyInput.placeholder = result.secretKeyConfigured ? "Bithumb secret key 저장됨" : "Bithumb secret key";
+        bithumbLastLiveTestBuyQty = Number(result.lastLiveTestBuyQty || 0);
+        bithumbLastLiveTestBuyMarket = result.lastLiveTestBuyMarket || "";
+        renderBithumbTestButtons();
         bithumbStatus.textContent =
           result.accessKeyConfigured && result.secretKeyConfigured
             ? "Bithumb API 키가 저장되어 있습니다. 저장된 값은 화면에 다시 표시하지 않습니다."
@@ -3138,6 +3262,16 @@ function renderHtml(summary: DashboardSummary, options: ViewOptions): string {
         bithumbStatus.textContent = error instanceof Error ? error.message : String(error);
       }
     }
+
+    function renderBithumbTestButtons() {
+      const hasBuyQty = Number.isFinite(bithumbLastLiveTestBuyQty) && bithumbLastLiveTestBuyQty > 0;
+      bithumbTestSell.disabled = !hasBuyQty;
+      bithumbTestSell.textContent = hasBuyQty ? "매수분 실시간 매도 테스트" : "매수 후 매도 테스트";
+      bithumbTestSell.title = hasBuyQty
+        ? "마지막 매수 테스트 수량 " + bithumbLastLiveTestBuyQty + " " + bithumbLastLiveTestBuyMarket + "을 매도합니다."
+        : "먼저 10,000원 실시간 매수 테스트를 실행해야 합니다.";
+    }
+    renderBithumbTestButtons();
 
     bithumbSave.addEventListener("click", async () => {
       bithumbSave.disabled = true;
@@ -3184,13 +3318,22 @@ function renderHtml(summary: DashboardSummary, options: ViewOptions): string {
       const isBuy = side === "BUY";
       const button = isBuy ? bithumbTestBuy : bithumbTestSell;
       const label = isBuy ? "매수" : "매도";
+      if (!isBuy && (!Number.isFinite(bithumbLastLiveTestBuyQty) || bithumbLastLiveTestBuyQty <= 0)) {
+        bithumbStatus.textContent = "먼저 10,000원 실시간 매수 테스트를 실행해야 매수한 수량만 매도할 수 있습니다.";
+        renderBithumbTestButtons();
+        return;
+      }
       const confirmed = window.confirm(
-        "실제 Bithumb 계좌로 10,000원 시장가 " + label + " 주문을 전송합니다. 계속할까요?"
+        isBuy
+          ? "실제 Bithumb 계좌로 10,000원 시장가 매수 주문을 전송합니다. 계속할까요?"
+          : "실제 Bithumb 계좌로 마지막 매수 테스트 수량 " + bithumbLastLiveTestBuyQty + "을 시장가 매도합니다. 계속할까요?"
       );
       if (!confirmed) return;
 
       button.disabled = true;
-      bithumbStatus.textContent = "Bithumb 10,000원 실시간 " + label + " 테스트 주문을 전송하는 중...";
+      bithumbStatus.textContent = isBuy
+        ? "Bithumb 10,000원 실시간 매수 테스트 주문을 전송하는 중..."
+        : "Bithumb 매수 테스트 수량 실시간 매도 주문을 전송하는 중...";
       try {
         const response = await fetch("/api/bithumb-live-test-order", {
           method: "POST",
@@ -3199,6 +3342,9 @@ function renderHtml(summary: DashboardSummary, options: ViewOptions): string {
         });
         const result = await response.json();
         if (!response.ok) throw new Error(result.error || "Bithumb 실시간 테스트 주문에 실패했습니다.");
+        bithumbLastLiveTestBuyQty = Number(result.lastLiveTestBuyQty || 0);
+        bithumbLastLiveTestBuyMarket = isBuy ? result.market : "";
+        renderBithumbTestButtons();
         bithumbStatus.textContent =
           "실시간 " + label + " 테스트 완료: " +
           result.market + " / " +
@@ -3208,7 +3354,8 @@ function renderHtml(summary: DashboardSummary, options: ViewOptions): string {
       } catch (error) {
         bithumbStatus.textContent = error instanceof Error ? error.message : String(error);
       } finally {
-        button.disabled = false;
+        if (isBuy) button.disabled = false;
+        renderBithumbTestButtons();
       }
     }
 
