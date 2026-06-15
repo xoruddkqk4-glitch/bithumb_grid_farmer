@@ -1,0 +1,38 @@
+{
+  "name": "bithumb-grid-farmer",
+  "private": true,
+  "version": "0.1.0",
+  "workspaces": [
+    "apps/grid-bot",
+    "apps/dashboard",
+    "packages/shared"
+  ],
+  "scripts": {
+    "typecheck": "tsc -p apps/grid-bot/tsconfig.json --noEmit && tsc -p apps/dashboard/tsconfig.json --noEmit",
+    "grid:build": "tsc -p apps/grid-bot/tsconfig.json",
+    "grid:start": "node apps/grid-bot/dist/apps/grid-bot/src/main.js",
+    "dashboard:build": "tsc -p apps/dashboard/tsconfig.json",
+    "dashboard:start": "node apps/dashboard/dist/apps/dashboard/src/server.js",
+    "telegram:start": "node apps/grid-bot/dist/apps/grid-bot/src/telegram/telegram-bot.js",
+    "grid:paper:once": "node scripts/grid-paper-once.cjs",
+    "grid:paper:mock": "node scripts/grid-paper-mock.cjs",
+    "grid:paper:live": "node scripts/grid-paper-live.cjs",
+    "grid:real:once": "node scripts/grid-real-once.cjs",
+    "bithumb:account": "node scripts/bithumb-account-check.cjs",
+    "backtest:btc:daily": "node scripts/backtest-btc-daily.cjs",
+    "candles:btc:daily": "node scripts/fetch-btc-daily-candles.cjs",
+    "grid:reset": "node scripts/grid-reset-state.cjs",
+    "price:watch": "node scripts/watch-price.cjs",
+    "pm2:paper:start": "pm2 start config/pm2.ecosystem.config.cjs",
+    "pm2:paper:stop": "pm2 stop bithumb-grid-bot-paper",
+    "pm2:price:start": "pm2 start config/pm2.ecosystem.config.cjs --only bithumb-price-watch",
+    "pm2:price:stop": "pm2 stop bithumb-price-watch",
+    "pm2:dashboard:start": "pm2 start config/pm2.ecosystem.config.cjs --only bithumb-grid-dashboard",
+    "pm2:dashboard:stop": "pm2 stop bithumb-grid-dashboard",
+    "pm2:telegram:start": "pm2 start config/pm2.ecosystem.config.cjs --only bithumb-grid-telegram",
+    "pm2:telegram:stop": "pm2 stop bithumb-grid-telegram"
+  },
+  "devDependencies": {
+    "typescript": "^5.5.0"
+  }
+}

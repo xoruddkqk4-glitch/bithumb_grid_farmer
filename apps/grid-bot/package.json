@@ -1,0 +1,10 @@
+{
+  "name": "@grid-farmer/grid-bot",
+  "private": true,
+  "version": "0.1.0",
+  "main": "dist/main.js",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "start": "node dist/apps/grid-bot/src/main.js"
+  }
+}

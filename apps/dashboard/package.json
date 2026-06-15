@@ -1,0 +1,10 @@
+{
+  "name": "@grid-farmer/dashboard",
+  "private": true,
+  "version": "0.1.0",
+  "main": "dist/apps/dashboard/src/server.js",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "start": "node dist/apps/dashboard/src/server.js"
+  }
+}

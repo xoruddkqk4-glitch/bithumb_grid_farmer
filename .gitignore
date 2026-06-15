@@ -1,0 +1,10 @@
+.env
+*.key
+node_modules/
+dist/
+data/*
+!data/.gitkeep
+!data/trading_logs/
+!data/trading_logs/.gitkeep
+data/trading_logs/*.jsonl
+*.log

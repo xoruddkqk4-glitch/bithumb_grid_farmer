@@ -1,0 +1,38 @@
+{
+  "currentFeature": "grid_farmer_bot",
+  "features": {
+    "grid_farmer_bot": {
+      "phase": "design",
+      "progress": 100,
+      "status": "design-complete",
+      "planDoc": "docs/01-plan/features/grid_farmer_bot_plan.md",
+      "designDoc": "docs/02-design/features/grid_farmer_bot_design.md",
+      "openIssues": 0,
+      "resolvedIssues": [
+        "N value first-run handling (fetch prev 20 daily candles)",
+        "09:05 buy-pause unnecessary (state machine guards)",
+        "capital-scale purchase table (15.8% basis)",
+        "dust cleanup policy (merge-sell before next cycle / manual)",
+        "API exception handling (backoff retry + idempotency + reconciliation)",
+        "Supabase schema (trades/cycles/bot_snapshots + indexes + RLS)",
+        "auth & user policy (single-user first, user_id/RLS for multi)"
+      ],
+      "scope": [
+        "trading-algorithm",
+        "fund-management",
+        "turtle-trailing-exit",
+        "ma5-trend-filter",
+        "xlsx-report-download",
+        "nextjs-supabase-dashboard"
+      ],
+      "doStageBacklog": [
+        "backtest-engine (2018/2022 crash)",
+        "fund-simulation (15.8% closure verification)",
+        "xlsx-generation (openpyxl format)",
+        "pm2-ecosystem & crontab scripts",
+        "alert-channel (telegram/email)"
+      ],
+      "lastUpdated": "2026-XX-XX"
+    }
+  }
+}

@@ -1,0 +1,13 @@
+{
+  "market": "KRW-BTC",
+  "gridRatio": 0.158,
+  "gridLevels": 20,
+  "gridGapPct": 0.01,
+  "loopIntervalMs": 3000,
+  "enableRealOrders": false,
+  "realOrdersConfirm": "",
+  "maxRealOrderKrw": 10000,
+  "maxRealTotalCapitalKrw": 1000000,
+  "enableGridBuy": false,
+  "enableGridSell": false
+}

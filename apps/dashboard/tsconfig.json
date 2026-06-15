@@ -1,0 +1,13 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "rootDir": "../..",
+    "outDir": "dist",
+    "declaration": false
+  },
+  "include": [
+    "src/**/*.ts",
+    "../grid-bot/src/node-shims.d.ts",
+    "../../packages/shared/src/**/*.ts"
+  ]
+}
