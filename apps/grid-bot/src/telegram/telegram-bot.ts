@@ -21,6 +21,7 @@ interface TelegramRuntimeState {
   logOffset: number;
   gridBatchStages: number[];
   lastDailyReportKey: string | null;
+  immediateTradeKeys?: string[];
 }
 
 interface ControlState {
@@ -376,10 +377,18 @@ async function processTradeLogs(
   const result = await readNewLogLines(config.logPath, runtimeState.logOffset);
   const currentState = await readJsonFile<BotState>(config.statePath);
   let stages = new Set(runtimeState.gridBatchStages);
+  let immediateTradeKeys = new Set(runtimeState.immediateTradeKeys ?? []);
   const batchTrades: TradeLogRecord[] = [];
 
   for (const trade of result.records) {
     if (trade.action === "BOT_ERROR" || trade.action === "PHASE_CHANGE") {
+      if (trade.action === "PHASE_CHANGE") {
+        const key = buildImmediateTradeKey(trade);
+        if (immediateTradeKeys.has(key)) {
+          continue;
+        }
+        immediateTradeKeys.add(key);
+      }
       await sendMessage(config, renderImmediateTrade(trade));
       continue;
     }
@@ -404,7 +413,17 @@ async function processTradeLogs(
     ...runtimeState,
     logOffset: result.offset,
     gridBatchStages: [...stages].sort((left, right) => left - right),
+    immediateTradeKeys: [...immediateTradeKeys].slice(-50),
   };
+}
+
+function buildImmediateTradeKey(trade: TradeLogRecord): string {
+  return [
+    trade.action,
+    trade.cycleId,
+    trade.message ?? "",
+    trade.reason ?? "",
+  ].join("|");
 }
 
 function shouldNotifyFarmerSignal(state: BotState | null): boolean {

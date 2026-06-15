@@ -195,18 +195,14 @@ async function restoreGridPhaseIfGridWorkExists(
     return state;
   }
   const hasFarmerPosition = state.farmerStage > 0 || (state.farmerPositions ?? []).some((position) => position.qty > 0);
-  const buyableLayerIndexes = state.layers
-    .filter((layer) => (layer.status === "WAITING" || layer.status === "SOLD") && layer.qty <= 0)
-    .map((layer) => layer.idx);
   const waitingLayerIndexes = state.layers
     .filter((layer) => layer.status === "WAITING" && layer.qty <= 0)
     .map((layer) => layer.idx);
   const openLayerIndexes = state.layers
     .filter((layer) => layer.status === "OPEN" && layer.qty > 0)
     .map((layer) => layer.idx);
-  const shouldRestoreForBuyableGrid = buyableLayerIndexes.length > 0;
   const shouldRestoreForOpenGrid = openLayerIndexes.length > 0 && !hasFarmerPosition;
-  if (!shouldRestoreForBuyableGrid && !shouldRestoreForOpenGrid) {
+  if (!shouldRestoreForOpenGrid) {
     return state;
   }
 
@@ -218,7 +214,7 @@ async function restoreGridPhaseIfGridWorkExists(
     lastError: null,
   };
   console.warn(
-    `[grid-bot] restored phase ${state.phase} -> GRID because grid work has priority: buyable=${buyableLayerIndexes.join(",") || "-"} open=${openLayerIndexes.join(",") || "-"} farmerPosition=${hasFarmerPosition}`,
+    `[grid-bot] restored phase ${state.phase} -> GRID because open grid work has priority: open=${openLayerIndexes.join(",") || "-"} farmerPosition=${hasFarmerPosition}`,
   );
   await logger.append({
     timestamp: restoredAt,
@@ -227,9 +223,8 @@ async function restoreGridPhaseIfGridWorkExists(
     cycleId: state.cycleId,
     action: "PHASE_CHANGE",
     message: `${state.phase} -> GRID`,
-    reason: shouldRestoreForBuyableGrid ? "GRID_BUYABLE_LAYERS_EXIST" : "GRID_OPEN_WITHOUT_FARMER_POSITION",
+    reason: "GRID_OPEN_WITHOUT_FARMER_POSITION",
     metadata: {
-      buyableLayerIndexes,
       waitingLayerIndexes,
       openLayerIndexes,
       hasFarmerPosition,
@@ -267,11 +262,6 @@ async function sleepBeforeNextLoop(
 }
 
 function hasGridWorkPriority(state: BotState): boolean {
-  const hasBuyableGridLayer = state.layers.some(
-    (layer) => (layer.status === "WAITING" || layer.status === "SOLD") && layer.qty <= 0,
-  );
-  if (hasBuyableGridLayer) return true;
-
   const hasOpenGridLayer = state.layers.some((layer) => layer.status === "OPEN" && layer.qty > 0);
   const hasFarmerPosition = state.farmerStage > 0 || (state.farmerPositions ?? []).some((position) => position.qty > 0);
   return hasOpenGridLayer && !hasFarmerPosition;
