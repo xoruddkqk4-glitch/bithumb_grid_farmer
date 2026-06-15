@@ -19,6 +19,7 @@ import { JsonlTradeLogger } from "../../grid-bot/src/storage/logger";
 import type {
   BotState,
   GridLayer,
+  OrderExecution,
   RecoveryExitSignalState,
   RecoveryTrailingActivationMode,
   TradeLogRecord,
@@ -1142,6 +1143,8 @@ async function executeBithumbLiveTestOrder(body: string): Promise<{
   price: number;
   executedAt: string;
   lastLiveTestBuyQty: number | null;
+  telegramNotified: boolean;
+  telegramError: string | null;
 }> {
   if (!isAuthEnabled()) {
     throw new Error("실시간 테스트 주문은 대시보드 인증을 켠 뒤에만 사용할 수 있습니다.");
@@ -1213,6 +1216,7 @@ async function executeBithumbLiveTestOrder(body: string): Promise<{
   } else {
     await writeBithumbLiveTestBuy(null);
   }
+  const telegramResult = await notifyBithumbLiveTestOrder(execution);
 
   return {
     ok: true,
@@ -1224,6 +1228,8 @@ async function executeBithumbLiveTestOrder(body: string): Promise<{
     price: execution.price,
     executedAt: execution.executedAt,
     lastLiveTestBuyQty: side === "BUY" ? execution.qty : null,
+    telegramNotified: telegramResult.sent,
+    telegramError: telegramResult.error ?? null,
   };
 }
 
@@ -1257,6 +1263,50 @@ async function writeBithumbLiveTestBuy(record: BithumbLiveTestBuyRecord | null):
     settings.lastLiveTestBuy = record;
   }
   await writeJsonAtomic(bithumbSettingsPath, settings);
+}
+
+async function notifyBithumbLiveTestOrder(execution: OrderExecution): Promise<{ sent: boolean; error?: string }> {
+  const sideLabel = execution.side === "BUY" ? "매수" : "매도";
+  const message = [
+    `[Bithumb 실시간 테스트 ${sideLabel} 완료]`,
+    `마켓: ${execution.market}`,
+    `금액: ${formatKrw(execution.amountKrw)}`,
+    `수량: ${execution.qty}`,
+    `기준가: ${formatKrw(execution.price)}`,
+    `주문ID: ${execution.orderId}`,
+    `체결시각: ${formatDate(execution.executedAt)}`,
+  ].join("\n");
+  return await sendTelegramMessageIfEnabled(message);
+}
+
+async function sendTelegramMessageIfEnabled(message: string): Promise<{ sent: boolean; error?: string }> {
+  try {
+    const settings = await readTelegramSettings();
+    if (settings.enabled === false) {
+      return { sent: false, error: "텔레그램이 꺼져 있습니다." };
+    }
+    const token = settings.botToken || process.env.TELEGRAM_BOT_TOKEN || "";
+    const chatId = settings.chatId || process.env.TELEGRAM_CHAT_ID || "";
+    if (token.length === 0 || chatId.length === 0) {
+      return { sent: false, error: "텔레그램 토큰 또는 채팅 ID가 설정되지 않았습니다." };
+    }
+    const response = await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({
+        chat_id: chatId,
+        text: message,
+        disable_web_page_preview: "true",
+      }).toString(),
+    });
+    const json = await response.json();
+    if (!response.ok) {
+      return { sent: false, error: `Telegram HTTP ${response.status}: ${JSON.stringify(json)}` };
+    }
+    return { sent: true };
+  } catch (error) {
+    return { sent: false, error: error instanceof Error ? error.message : String(error) };
+  }
 }
 
 async function sendTelegramTestMessage(): Promise<{ ok: true }> {
@@ -3345,12 +3395,18 @@ function renderHtml(summary: DashboardSummary, options: ViewOptions): string {
         bithumbLastLiveTestBuyQty = Number(result.lastLiveTestBuyQty || 0);
         bithumbLastLiveTestBuyMarket = isBuy ? result.market : "";
         renderBithumbTestButtons();
+        const telegramStatusText = result.telegramNotified
+          ? " / 텔레그램 전송 완료"
+          : result.telegramError
+            ? " / 텔레그램 전송 실패: " + result.telegramError
+            : "";
         bithumbStatus.textContent =
           "실시간 " + label + " 테스트 완료: " +
           result.market + " / " +
           formatKrw(result.amountKrw) + " / qty " +
           result.qty + " / order " +
-          result.orderId;
+          result.orderId +
+          telegramStatusText;
       } catch (error) {
         bithumbStatus.textContent = error instanceof Error ? error.message : String(error);
       } finally {
