@@ -12,6 +12,7 @@ import type {
 import { filterConfirmedDayCandles, type BithumbPublicClient, type PriceQuote } from "../bithumb/bithumb-client";
 import { sleep } from "../bithumb/rate-limiter";
 import type { GridBotConfig } from "../config";
+import { buildGrid } from "../grid/grid-levels";
 import type { JsonlTradeLogger } from "../storage/logger";
 import { calculateTurtleDailyIndicators } from "./turtle-indicators";
 
@@ -177,14 +178,17 @@ export class RecoveryExitEngine {
     const finalExecution = executions[executions.length - 1] ?? null;
     const executedAt = finalExecution?.executedAt ?? new Date().toISOString();
     const fullExit = takeProfitPlan == null || soldRatio >= 0.99999999;
+    const averageSellPrice = soldQty > 0 ? roundKrw(soldAmountKrw / soldQty) : quote.tradePrice;
     const reducedState = reduceRecoveryPosition(nextState, soldRatio, fullExit, executedAt, finalExecution?.orderId ?? null);
+    const postExitState = fullExit
+      ? rebuildGridAfterFullRecoveryExit(reducedState, averageSellPrice, this.config, executedAt)
+      : reducedState;
 
     nextState = {
-      ...reducedState,
-      phase: fullExit ? "COOLDOWN" : reducedState.phase,
-      lastExitTime: fullExit ? executedAt : reducedState.lastExitTime,
-      takeProfit1Done: fullExit ? false : (reason === "TAKE_PROFIT_1" ? true : reducedState.takeProfit1Done ?? false),
-      takeProfit2Done: fullExit ? false : (reason === "TAKE_PROFIT_2" ? true : reducedState.takeProfit2Done ?? false),
+      ...postExitState,
+      lastExitTime: fullExit ? executedAt : postExitState.lastExitTime,
+      takeProfit1Done: fullExit ? false : (reason === "TAKE_PROFIT_1" ? true : postExitState.takeProfit1Done ?? false),
+      takeProfit2Done: fullExit ? false : (reason === "TAKE_PROFIT_2" ? true : postExitState.takeProfit2Done ?? false),
       recoveryExitSignal: {
         ...signal,
         expectedNetPnlKrw: realizedPnlKrw,
@@ -192,10 +196,23 @@ export class RecoveryExitEngine {
       },
     };
 
+    if (fullExit && state.phase !== nextState.phase) {
+      await this.appendLog(nextState, {
+        action: "PHASE_CHANGE",
+        message: `${state.phase} -> ${nextState.phase}`,
+        reason: "RECOVERY_FULL_EXIT",
+        metadata: {
+          averageSellPrice,
+          previousCycleId: state.cycleId,
+          nextCycleId: nextState.cycleId,
+        },
+      });
+    }
+
     await this.appendLog(nextState, {
       action: "RECOVERY_SELL",
       layerType: "FARMER",
-      price: soldQty > 0 ? roundKrw(soldAmountKrw / soldQty) : quote.tradePrice,
+      price: averageSellPrice,
       qty: soldQty,
       amountKrw: soldAmountKrw,
       feeKrw: sellFeeKrw,
@@ -379,6 +396,59 @@ function reduceRecoveryPosition(
       }))
       .filter((position) => position.qty > 0 && position.costKrw > 0),
   };
+}
+
+function rebuildGridAfterFullRecoveryExit(
+  state: BotState,
+  entryPrice: number,
+  config: GridBotConfig,
+  exitedAt: string,
+): BotState {
+  const levels = state.layers.length > 0 ? state.layers.length : config.gridLevels;
+  const gapPct = inferGridGapPct(state) ?? config.gridGapPct;
+  const grid = buildGrid({
+    entryPrice,
+    totalCapitalKrw: state.totalCapitalKrw || config.totalCapitalKrw,
+    gridRatio: config.gridRatio,
+    levels,
+    gapPct,
+  });
+  const orderAmountKrw = state.gridOrderAmountKrw > 0
+    ? state.gridOrderAmountKrw
+    : grid.sizing.orderAmountKrw;
+  const layers = orderAmountKrw > 0
+    ? grid.layers.map((layer) => ({ ...layer, amountKrw: orderAmountKrw }))
+    : grid.layers;
+
+  return {
+    ...state,
+    phase: "GRID",
+    cycleId: randomUUID(),
+    gridEntryPrice: entryPrice,
+    gridInvestmentKrw: layers.reduce((sum, layer) => sum + layer.amountKrw, 0),
+    gridOrderAmountKrw: layers[0]?.amountKrw ?? grid.sizing.orderAmountKrw,
+    layers,
+    farmerStage: 0,
+    farmerAnchorPrice: null,
+    farmerLastBuyAt: null,
+    farmerLastBuyPrice: null,
+    farmerDefenseStatus: null,
+    farmerSignal: null,
+    farmerPositions: [],
+    highestPrice: entryPrice,
+    cooldownUntil: null,
+    lastExitTime: exitedAt,
+    lastPrice: entryPrice,
+  };
+}
+
+function inferGridGapPct(state: BotState): number | null {
+  const firstLayer = state.layers.find((layer) => layer.idx === 1);
+  if (state.gridEntryPrice == null || firstLayer == null) {
+    return null;
+  }
+  const gapPct = (state.gridEntryPrice - firstLayer.buyPrice) / state.gridEntryPrice;
+  return Number.isFinite(gapPct) && gapPct > 0 ? gapPct : null;
 }
 
 function clampRatio(value: number): number {

@@ -195,16 +195,15 @@ async function restoreGridPhaseIfGridWorkExists(
     return state;
   }
   const hasFarmerPosition = state.farmerStage > 0 || (state.farmerPositions ?? []).some((position) => position.qty > 0);
+  if (hasFarmerPosition) {
+    return state;
+  }
   const waitingLayerIndexes = state.layers
     .filter((layer) => layer.status === "WAITING" && layer.qty <= 0)
     .map((layer) => layer.idx);
   const openLayerIndexes = state.layers
     .filter((layer) => layer.status === "OPEN" && layer.qty > 0)
     .map((layer) => layer.idx);
-  const shouldRestoreForOpenGrid = openLayerIndexes.length > 0 && !hasFarmerPosition;
-  if (!shouldRestoreForOpenGrid) {
-    return state;
-  }
 
   const restoredAt = new Date().toISOString();
   const nextState: BotState = {
@@ -214,7 +213,7 @@ async function restoreGridPhaseIfGridWorkExists(
     lastError: null,
   };
   console.warn(
-    `[grid-bot] restored phase ${state.phase} -> GRID because open grid work has priority: open=${openLayerIndexes.join(",") || "-"} farmerPosition=${hasFarmerPosition}`,
+    `[grid-bot] restored phase ${state.phase} -> GRID because no farmer position exists: waiting=${waitingLayerIndexes.join(",") || "-"} open=${openLayerIndexes.join(",") || "-"}`,
   );
   await logger.append({
     timestamp: restoredAt,
@@ -223,7 +222,7 @@ async function restoreGridPhaseIfGridWorkExists(
     cycleId: state.cycleId,
     action: "PHASE_CHANGE",
     message: `${state.phase} -> GRID`,
-    reason: "GRID_OPEN_WITHOUT_FARMER_POSITION",
+    reason: "NO_FARMER_POSITION_GRID_PHASE",
     metadata: {
       waitingLayerIndexes,
       openLayerIndexes,
@@ -262,9 +261,8 @@ async function sleepBeforeNextLoop(
 }
 
 function hasGridWorkPriority(state: BotState): boolean {
-  const hasOpenGridLayer = state.layers.some((layer) => layer.status === "OPEN" && layer.qty > 0);
   const hasFarmerPosition = state.farmerStage > 0 || (state.farmerPositions ?? []).some((position) => position.qty > 0);
-  return hasOpenGridLayer && !hasFarmerPosition;
+  return !hasFarmerPosition;
 }
 
 main().catch((error) => {
