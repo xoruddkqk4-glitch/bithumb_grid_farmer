@@ -300,8 +300,16 @@ export class BithumbPrivateClient {
     };
     const response = await this.postOrder(body);
     const orderId = readOrderId(response);
-    const order = await this.tryGetOrder(orderId, params.waitMs);
-    const executedQty = readOptionalNumericStringField(order, "executed_volume") ?? qty;
+    const order = await this.getOrderOrCancel(orderId, params.waitMs);
+    const executedQty = readRequiredExecutedVolume(order, orderId);
+    const remainingQty = readOptionalNumericStringField(order, "remaining_volume") ?? 0;
+    if (executedQty <= 0) {
+      await this.cancelOrder(orderId);
+      throw new Error(`Bithumb limit buy ${orderId} was not filled.`);
+    }
+    if (remainingQty > 0) {
+      await this.cancelOrder(orderId);
+    }
     const amountKrw = roundKrw(params.price * executedQty);
     const feeKrw = readOptionalNumericStringField(order, "paid_fee") ?? roundKrw(amountKrw * this.options.feeRate);
     return {
@@ -365,8 +373,16 @@ export class BithumbPrivateClient {
     };
     const response = await this.postOrder(body);
     const orderId = readOrderId(response);
-    const order = await this.tryGetOrder(orderId, params.waitMs);
-    const qty = readOptionalNumericStringField(order, "executed_volume") ?? params.qty;
+    const order = await this.getOrderOrCancel(orderId, params.waitMs);
+    const qty = readRequiredExecutedVolume(order, orderId);
+    const remainingQty = readOptionalNumericStringField(order, "remaining_volume") ?? 0;
+    if (qty <= 0) {
+      await this.cancelOrder(orderId);
+      throw new Error(`Bithumb limit sell ${orderId} was not filled.`);
+    }
+    if (remainingQty > 0) {
+      await this.cancelOrder(orderId);
+    }
     const amountKrw = roundKrw(params.price * qty);
     const feeKrw = readOptionalNumericStringField(order, "paid_fee") ?? roundKrw(amountKrw * this.options.feeRate);
     return {
@@ -387,24 +403,37 @@ export class BithumbPrivateClient {
     return asRecord(await this.authenticatedRequest("POST", "/v1/orders", body));
   }
 
-  private async tryGetOrder(uuid: string, waitMs = 1_000): Promise<Record<string, unknown>> {
-    await sleep(waitMs);
+  private async cancelOrder(uuid: string): Promise<Record<string, unknown>> {
+    return asRecord(await this.authenticatedRequest("DELETE", "/v1/order", { uuid }));
+  }
+
+  private async getOrderOrCancel(uuid: string, waitMs = 1_000): Promise<Record<string, unknown>> {
     try {
-      return asRecord(await this.authenticatedRequest("GET", "/v1/order", { uuid }));
-    } catch {
-      return {};
+      return await this.tryGetOrder(uuid, waitMs);
+    } catch (error) {
+      try {
+        await this.cancelOrder(uuid);
+      } catch {
+        // Keep the original lookup failure visible; the operator needs the order id for manual reconciliation.
+      }
+      throw new Error(`Bithumb order ${uuid} fill could not be confirmed: ${error instanceof Error ? error.message : String(error)}`);
     }
   }
 
+  private async tryGetOrder(uuid: string, waitMs = 1_000): Promise<Record<string, unknown>> {
+    await sleep(waitMs);
+    return asRecord(await this.authenticatedRequest("GET", "/v1/order", { uuid }));
+  }
+
   private async authenticatedRequest(
-    method: "GET" | "POST",
+    method: "GET" | "POST" | "DELETE",
     path: string,
     params: Record<string, string> = {},
   ): Promise<unknown> {
     const query = new URLSearchParams(params).toString();
-    const url = method === "GET" && query.length > 0 ? `${this.apiUrl}${path}?${query}` : `${this.apiUrl}${path}`;
+    const url = method !== "POST" && query.length > 0 ? `${this.apiUrl}${path}?${query}` : `${this.apiUrl}${path}`;
     const init: {
-      method: "GET" | "POST";
+      method: "GET" | "POST" | "DELETE";
       headers: Record<string, string>;
       body?: string;
     } = {
@@ -497,6 +526,14 @@ function readOrderId(value: Record<string, unknown>): string {
     throw new Error("Bithumb order response missing uuid/order_id.");
   }
   return id;
+}
+
+function readRequiredExecutedVolume(value: Record<string, unknown>, orderId: string): number {
+  const executedQty = readOptionalNumericStringField(value, "executed_volume");
+  if (executedQty == null) {
+    throw new Error(`Bithumb order ${orderId} response missing executed_volume.`);
+  }
+  return executedQty;
 }
 
 function readOptionalStringField(value: Record<string, unknown>, key: string): string | null {
