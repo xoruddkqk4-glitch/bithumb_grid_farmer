@@ -110,6 +110,13 @@ export interface BotState {
   gridOrderAmountKrw: number;
   gridLevelSettings?: GridLevelSetting[];
   totalCapitalKrw: number;
+  accountCapitalKrw?: number | null;
+  accountCapitalUpdatedAt?: string | null;
+  accountKrwBalance?: number | null;
+  accountKrwLocked?: number | null;
+  accountAssetBalance?: number | null;
+  accountAssetLocked?: number | null;
+  accountAssetValueKrw?: number | null;
   layers: GridLayer[];
   farmerStage: number;
   maxFarmerStages?: number;

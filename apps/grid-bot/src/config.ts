@@ -33,6 +33,7 @@ export interface GridBotConfig {
   webSocketTickerFirstQuoteTimeoutMs: number;
   enableRealOrders: boolean;
   realOrdersConfirm: string;
+  useAccountCapital: boolean;
   maxRealOrderKrw: number;
   maxRealTotalCapitalKrw: number;
   useAggressiveLimitOrders: boolean;
@@ -167,6 +168,7 @@ export function loadConfig(): GridBotConfig {
   const enableRealOrders = readBool("ENABLE_REAL_ORDERS", false);
   const totalCapitalKrw = readNumber("GRID_BOT_TOTAL_CAPITAL_KRW", DEFAULT_TOTAL_CAPITAL_KRW);
   const realOrdersConfirm = process.env.REAL_ORDERS_CONFIRM || "";
+  const useAccountCapital = readBool("GRID_BOT_USE_ACCOUNT_CAPITAL", enableRealOrders);
   const bithumbAccessKey = process.env.BITHUMB_ACCESS_KEY || process.env.API_KEY || storedBithumbSettings.accessKey;
   const bithumbSecretKey = process.env.BITHUMB_SECRET_KEY || process.env.SECRET_KEY || storedBithumbSettings.secretKey;
   const maxRealOrderKrw = readNumber("GRID_BOT_MAX_REAL_ORDER_KRW", 10_000);
@@ -185,6 +187,7 @@ export function loadConfig(): GridBotConfig {
     validateRealOrderConfig({
       mockPrice,
       totalCapitalKrw,
+      useAccountCapital,
       maxRealOrderKrw,
       maxRealTotalCapitalKrw,
       realOrdersConfirm,
@@ -213,6 +216,7 @@ export function loadConfig(): GridBotConfig {
     webSocketTickerFirstQuoteTimeoutMs: readNumber("GRID_BOT_WS_TICKER_FIRST_QUOTE_TIMEOUT_MS", 3_000),
     enableRealOrders,
     realOrdersConfirm,
+    useAccountCapital,
     maxRealOrderKrw,
     maxRealTotalCapitalKrw,
     useAggressiveLimitOrders,
@@ -258,6 +262,7 @@ export function loadConfig(): GridBotConfig {
 function validateRealOrderConfig(params: {
   mockPrice: number | null;
   totalCapitalKrw: number;
+  useAccountCapital: boolean;
   maxRealOrderKrw: number;
   maxRealTotalCapitalKrw: number;
   realOrdersConfirm: string;
@@ -276,7 +281,7 @@ function validateRealOrderConfig(params: {
   if (params.maxRealOrderKrw <= 0 || params.maxRealTotalCapitalKrw <= 0) {
     throw new Error("GRID_BOT_MAX_REAL_ORDER_KRW and GRID_BOT_MAX_REAL_TOTAL_CAPITAL_KRW must be positive.");
   }
-  if (params.totalCapitalKrw > params.maxRealTotalCapitalKrw) {
+  if (!params.useAccountCapital && params.totalCapitalKrw > params.maxRealTotalCapitalKrw) {
     throw new Error(
       `GRID_BOT_TOTAL_CAPITAL_KRW=${params.totalCapitalKrw} exceeds GRID_BOT_MAX_REAL_TOTAL_CAPITAL_KRW=${params.maxRealTotalCapitalKrw}.`,
     );

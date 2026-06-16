@@ -112,6 +112,12 @@ PNL:
 Telegram:
   - 대시보드에서 그리드 매수/매도 알림 방식을 설정
   - 추천 기본값: 매수=batch, 매도=immediate, gridBatchSize=10
+
+Live account capital:
+  - 실거래 모드에서는 GRID_BOT_USE_ACCOUNT_CAPITAL=true가 기본값
+  - 봇 시작 시와 새 사이클 시작 시 Bithumb KRW 잔고 + BTC 평가금액으로 totalCapitalKrw 자동 갱신
+  - 계좌 평가금액이 GRID_BOT_MAX_REAL_TOTAL_CAPITAL_KRW를 넘으면 시작/갱신 단계에서 중단
+  - 주문 직전에는 기존처럼 available KRW/BTC 잔고를 다시 검증
 ```
 
 ---

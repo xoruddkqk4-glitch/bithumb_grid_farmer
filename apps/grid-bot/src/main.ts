@@ -11,6 +11,10 @@ import { RecoveryExitEngine } from "./turtle/recovery-exit-engine";
 import { BithumbPrivateClient, BithumbPublicClient } from "./bithumb/bithumb-client";
 import { BithumbTickerWebSocketPriceSource } from "./bithumb/ws-ticker-price-source";
 import { sleep } from "./bithumb/rate-limiter";
+import {
+  loadAccountCapitalSnapshot,
+  type AccountCapitalSnapshot,
+} from "./account/account-capital";
 import type { BotState } from "../../../packages/shared/src/types";
 import type { PriceQuote } from "./bithumb/bithumb-client";
 
@@ -53,15 +57,32 @@ async function main(): Promise<void> {
   const farmerEngine = new FarmerEngine(config, bithumb, executor, logger);
   const recoveryExitEngine = new RecoveryExitEngine(config, bithumb, executor, logger);
 
+  let startupAccountSnapshot: AccountCapitalSnapshot | null = null;
+  let initialTotalCapitalKrw = config.totalCapitalKrw;
+  if (config.enableRealOrders && config.useAccountCapital) {
+    const startupQuote = await priceSource.getCurrentPrice(config.market);
+    startupAccountSnapshot = await loadAccountCapitalSnapshot({
+      client: bithumbPrivate,
+      market: config.market,
+      quote: startupQuote,
+    });
+    assertAccountCapitalWithinLimits(startupAccountSnapshot, config);
+    initialTotalCapitalKrw = startupAccountSnapshot.totalCapitalKrw;
+  }
+
   let state = await stateStore.readOrCreate({
     botId: config.botId,
     market: config.market,
-    totalCapitalKrw: config.totalCapitalKrw,
+    totalCapitalKrw: initialTotalCapitalKrw,
   });
+  if (startupAccountSnapshot != null) {
+    state = applyAccountCapitalSnapshot(state, startupAccountSnapshot, { resetGridBeforeFirstBuy: true });
+    await stateStore.writeAtomic(state);
+  }
   if (config.enableRealOrders) {
     const krwAvailable = await bithumbPrivate.getAvailableBalance("KRW");
     console.log(
-      `[grid-bot] real order checks passed market=${config.market} krwAvailable=${Math.floor(krwAvailable)} maxOrderKrw=${config.maxRealOrderKrw}`,
+      `[grid-bot] real order checks passed market=${config.market} krwAvailable=${Math.floor(krwAvailable)} totalCapitalKrw=${Math.floor(state.totalCapitalKrw)} accountCapital=${config.useAccountCapital} maxOrderKrw=${config.maxRealOrderKrw} maxTotalCapitalKrw=${config.maxRealTotalCapitalKrw}`,
     );
   }
   const restoredInitialState = await restoreGridPhaseIfGridWorkExists(state, logger);
@@ -141,9 +162,10 @@ async function main(): Promise<void> {
       if (state.gridResetRequestedAt != null) {
         const resetResult = await gridEngine.resetOpenGridPositions(state, quote);
         state = resetResult.state;
+        state = await refreshAccountCapitalIfNeeded(state, quote, config, bithumbPrivate, "grid-reset");
         await stateStore.writeAtomic(state);
         console.log(
-          `[grid-bot] loop=${loops} wake=${wakeReason} price=${quote.tradePrice} source=${quote.source} phase=${state.phase} gridResetSells=${resetResult.count}`,
+          `[grid-bot] loop=${loops} wake=${wakeReason} price=${quote.tradePrice} source=${quote.source} phase=${state.phase} gridResetSells=${resetResult.count} totalCapitalKrw=${Math.floor(state.totalCapitalKrw)}`,
         );
         if (config.maxLoops != null && loops >= config.maxLoops) {
           console.log(`[grid-bot] stopped after GRID_BOT_MAX_LOOPS=${config.maxLoops}`);
@@ -162,10 +184,15 @@ async function main(): Promise<void> {
       state = result.state;
       const farmerResult = await farmerEngine.tick(state, quote);
       state = farmerResult.state;
+      const cycleIdBeforeRecoveryExit = state.cycleId;
       const recoveryExitResult = await recoveryExitEngine.tick(state, quote, {
         enableRecoverySell: (state.enableRecoveryTurtleSell ?? config.enableRecoveryTurtleSell) && !safetySwitch.sellPaused,
       });
       state = recoveryExitResult.state;
+      if (recoveryExitResult.sold && state.cycleId !== cycleIdBeforeRecoveryExit) {
+        state = await refreshAccountCapitalIfNeeded(state, quote, config, bithumbPrivate, "recovery-full-exit");
+        state = clearGridForNextAccountCapitalCycle(state);
+      }
       await stateStore.writeAtomic(state);
       const nextWaitMs = selectWaitIntervalMs(priceSource, state, config);
 
@@ -210,6 +237,85 @@ async function main(): Promise<void> {
 }
 
 type PriceSource = BithumbPublicClient | BithumbTickerWebSocketPriceSource;
+
+async function refreshAccountCapitalIfNeeded(
+  state: BotState,
+  quote: PriceQuote,
+  config: ReturnType<typeof loadConfig>,
+  bithumbPrivate: BithumbPrivateClient,
+  reason: "grid-reset" | "recovery-full-exit",
+): Promise<BotState> {
+  if (!config.enableRealOrders || !config.useAccountCapital) {
+    return state;
+  }
+  const snapshot = await loadAccountCapitalSnapshot({
+    client: bithumbPrivate,
+    market: state.market,
+    quote,
+  });
+  assertAccountCapitalWithinLimits(snapshot, config);
+  const nextState = applyAccountCapitalSnapshot(state, snapshot, { resetGridBeforeFirstBuy: true });
+  console.log(
+    `[grid-bot] account capital refreshed reason=${reason} totalCapitalKrw=${Math.floor(snapshot.totalCapitalKrw)} krw=${Math.floor(snapshot.krwBalance)} lockedKrw=${Math.floor(snapshot.krwLocked)} ${snapshot.assetCurrency}=${snapshot.assetBalance + snapshot.assetLocked} assetValueKrw=${Math.floor(snapshot.assetValueKrw)}`,
+  );
+  return nextState;
+}
+
+function applyAccountCapitalSnapshot(
+  state: BotState,
+  snapshot: AccountCapitalSnapshot,
+  options: { resetGridBeforeFirstBuy: boolean },
+): BotState {
+  const nextState: BotState = {
+    ...state,
+    totalCapitalKrw: snapshot.totalCapitalKrw,
+    accountCapitalKrw: snapshot.totalCapitalKrw,
+    accountCapitalUpdatedAt: snapshot.evaluatedAt,
+    accountKrwBalance: snapshot.krwBalance,
+    accountKrwLocked: snapshot.krwLocked,
+    accountAssetBalance: snapshot.assetBalance,
+    accountAssetLocked: snapshot.assetLocked,
+    accountAssetValueKrw: snapshot.assetValueKrw,
+  };
+  return options.resetGridBeforeFirstBuy && shouldClearGridForAccountCapitalRefresh(nextState)
+    ? clearGridForNextAccountCapitalCycle(nextState)
+    : nextState;
+}
+
+function assertAccountCapitalWithinLimits(
+  snapshot: AccountCapitalSnapshot,
+  config: ReturnType<typeof loadConfig>,
+): void {
+  if (!Number.isFinite(snapshot.totalCapitalKrw) || snapshot.totalCapitalKrw <= 0) {
+    throw new Error(`Account total capital must be positive. Received: ${snapshot.totalCapitalKrw}.`);
+  }
+  if (snapshot.totalCapitalKrw > config.maxRealTotalCapitalKrw) {
+    throw new Error(
+      `Account total capital ${snapshot.totalCapitalKrw} exceeds GRID_BOT_MAX_REAL_TOTAL_CAPITAL_KRW=${config.maxRealTotalCapitalKrw}.`,
+    );
+  }
+}
+
+function shouldClearGridForAccountCapitalRefresh(state: BotState): boolean {
+  const hasOpenGridPosition = state.layers.some((layer) => layer.status === "OPEN" && layer.qty > 0);
+  const hasFarmerPosition = state.farmerStage > 0 || (state.farmerPositions ?? []).some((position) => position.qty > 0);
+  return state.phase === "GRID" && !hasOpenGridPosition && !hasFarmerPosition;
+}
+
+function clearGridForNextAccountCapitalCycle(state: BotState): BotState {
+  return {
+    ...state,
+    phase: "GRID",
+    gridEntryPrice: null,
+    gridEntryReferencePrice: null,
+    gridEntryNValue: null,
+    gridEntryNCalculatedForKstDate: null,
+    gridInvestmentKrw: 0,
+    gridOrderAmountKrw: 0,
+    layers: [],
+    highestPrice: 0,
+  };
+}
 
 async function waitBeforeNextCycle(
   priceSource: PriceSource,
