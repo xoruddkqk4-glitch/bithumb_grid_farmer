@@ -24,6 +24,7 @@ export function buildGrid(input: BuildGridInput): BuiltGrid {
     totalCapitalKrw: input.totalCapitalKrw,
     gridRatio: input.gridRatio,
     levels: input.levels,
+    levelSettings: input.levelSettings,
   });
 
   return {
@@ -31,6 +32,7 @@ export function buildGrid(input: BuildGridInput): BuiltGrid {
     layers: generateGridLayers({
       entryPrice: input.entryPrice,
       orderAmountKrw: sizing.orderAmountKrw,
+      targetInvestmentKrw: sizing.gridInvestmentKrw,
       levels: input.levels,
       gapPct: input.gapPct,
       levelSettings: input.levelSettings,

@@ -230,7 +230,7 @@ async function buildSummary(): Promise<DashboardSummary> {
   const totalPerformance = calculateRealizedPerformance(allTrades);
   const todayPerformance = calculatePeriodPerformance(allTrades, getCurrentTradingDayWindow());
   const dailyPnl = calculateDailyPnl(allTrades);
-  const tradeCounts = countTradeActions(allTrades);
+  const tradeCounts = countTradeActions(allTrades, state?.cycleId ?? null);
 
   if (state == null) {
     warnings.push("State file does not exist yet. Start the grid bot first.");
@@ -275,9 +275,12 @@ function countLayers(layers: GridLayer[], status: GridLayer["status"]): number {
   return layers.filter((layer) => layer.status === status).length;
 }
 
-function countTradeActions(trades: TradeLogRecord[]): { buys: number; sells: number } {
+function countTradeActions(trades: TradeLogRecord[], cycleId: string | null): { buys: number; sells: number } {
   return trades.reduce(
     (counts, trade) => {
+      if (cycleId != null && trade.cycleId !== cycleId) {
+        return counts;
+      }
       if (trade.action === "GRID_BUY" || trade.action === "FARMER_BUY" || String(trade.action) === "GRID_REBUY") {
         counts.buys += 1;
       }
@@ -658,6 +661,7 @@ async function writeTextAtomic(path: string, value: string): Promise<void> {
 function parseGridSettingsBody(body: string, totalCapitalKrw: number): {
   gapPct: number;
   orderAmountKrw: number;
+  gridInvestmentKrw: number;
   gridLevels: number;
   gridLevelSettings: GridLevelSetting[];
   maxFarmerStages: number;
@@ -771,15 +775,17 @@ function parseGridSettingsBody(body: string, totalCapitalKrw: number): {
   if (!Number.isInteger(gridLevels) || gridLevels < 1 || gridLevels > 100) {
     throw new Error("Grid levels must be an integer between 1 and 100.");
   }
-  const orderAmountKrw = calculateGridSizing({
+  const gridLevelSettings = parseGridLevelSettings(parsed.gridLevelSettings, gridLevels, gapPct);
+  const gridSizing = calculateGridSizing({
     totalCapitalKrw,
     gridRatio: DEFAULT_GRID_RATIO,
     levels: gridLevels,
-  }).orderAmountKrw;
+    levelSettings: gridLevelSettings,
+  });
+  const orderAmountKrw = gridSizing.orderAmountKrw;
   if (!Number.isFinite(orderAmountKrw) || orderAmountKrw < 5_000) {
     throw new Error("Calculated order amount must be at least 5,000 KRW. Increase account capital or reduce grid levels.");
   }
-  const gridLevelSettings = parseGridLevelSettings(parsed.gridLevelSettings, gridLevels, gapPct);
   if (!Number.isInteger(maxFarmerStages) || maxFarmerStages < 0 || maxFarmerStages > 10) {
     throw new Error("Farmer stages must be an integer between 0 and 10.");
   }
@@ -849,6 +855,7 @@ function parseGridSettingsBody(body: string, totalCapitalKrw: number): {
   return {
     gapPct,
     orderAmountKrw: Math.round(orderAmountKrw),
+    gridInvestmentKrw: gridSizing.gridInvestmentKrw,
     gridLevels,
     gridLevelSettings,
     maxFarmerStages,
@@ -941,12 +948,14 @@ function rebuildGridLayers(params: {
   entryPrice: number;
   gapPct: number;
   orderAmountKrw: number;
+  targetInvestmentKrw: number;
   gridLevels: number;
   gridLevelSettings: GridLevelSetting[];
 }): GridLayer[] {
   const generatedLayers = generateGridLayers({
     entryPrice: params.entryPrice,
     orderAmountKrw: params.orderAmountKrw,
+    targetInvestmentKrw: params.targetInvestmentKrw,
     levels: params.gridLevels,
     gapPct: params.gapPct,
     levelSettings: params.gridLevelSettings,
@@ -1004,6 +1013,7 @@ async function updateGridSettings(body: string): Promise<{
     entryPrice,
     gapPct: settings.gapPct,
     orderAmountKrw: settings.orderAmountKrw,
+    targetInvestmentKrw: settings.gridInvestmentKrw,
     gridLevels: settings.gridLevels,
     gridLevelSettings: settings.gridLevelSettings,
   });
@@ -1542,11 +1552,13 @@ async function requestGridReset(): Promise<{
     await writeJsonAtomic(statePath, {
       ...state,
       phase: "GRID",
+      cycleId: randomUUID(),
       gridEntryPrice: null,
       gridEntryReferencePrice: null,
       gridEntryNValue: null,
       gridEntryNCalculatedForKstDate: null,
       gridInvestmentKrw: 0,
+      gridOrderAmountKrw: 0,
       layers: [],
       highestPrice: 0,
       gridResetRequestedAt: null,
@@ -1644,11 +1656,13 @@ async function requestGridReset(): Promise<{
   nextState = {
     ...nextState,
     phase: "GRID",
+    cycleId: randomUUID(),
     gridEntryPrice: null,
     gridEntryReferencePrice: null,
     gridEntryNValue: null,
     gridEntryNCalculatedForKstDate: null,
     gridInvestmentKrw: 0,
+    gridOrderAmountKrw: 0,
     layers: [],
     highestPrice: 0,
     gridResetRequestedAt: null,
@@ -1702,6 +1716,7 @@ function renderHtml(summary: DashboardSummary, options: ViewOptions): string {
           totalCapitalKrw: state.totalCapitalKrw,
           gridRatio: DEFAULT_GRID_RATIO,
           levels: gridLevelCount,
+          levelSettings: gridLevelSettings,
         }).orderAmountKrw
       : null;
   const accountCapitalKrw = state?.accountCapitalKrw ?? state?.totalCapitalKrw ?? null;
@@ -2821,7 +2836,7 @@ function renderHtml(summary: DashboardSummary, options: ViewOptions): string {
           <div class="field">
             <label>차수별 매수 금액(KRW)</label>
             <div id="grid-order-amount" class="readonly-metric" data-value="${calculatedGridOrderAmountKrw ?? ""}">${formatKrw(calculatedGridOrderAmountKrw)}</div>
-            <div class="muted">계좌 평가금액 × 15.8% ÷ 그리드 차수로 자동 계산됩니다.</div>
+            <div class="muted">계좌 평가금액 × 15.8% ÷ 차수별 배수 합계로 자동 계산됩니다.</div>
           </div>
           <div class="field">
             <label for="grid-loop-interval">Grid 점검 간격(초)</label>
@@ -2965,7 +2980,7 @@ function renderHtml(summary: DashboardSummary, options: ViewOptions): string {
           </div>
           <div id="funding-preview" class="funding-preview"></div>
         </form>
-        <div id="grid-settings-status" class="form-status">전략 설정은 저장 즉시 적용됩니다. 차수별 매수 금액은 계좌 평가금액과 그리드 차수 기준으로 자동 계산됩니다.</div>
+        <div id="grid-settings-status" class="form-status">전략 설정은 저장 즉시 적용됩니다. 차수별 매수 금액은 계좌 평가금액과 차수별 배수 합계 기준으로 자동 계산됩니다.</div>
         <div class="settings-section"><h3>그리드 전체 리셋</h3></div>
         <div class="field">
           <label>보유 중인 그리드 포지션 전량 매도</label>
@@ -3391,7 +3406,11 @@ function renderHtml(summary: DashboardSummary, options: ViewOptions): string {
       const levels = Number.isFinite(configuredLevels) && configuredLevels > 0 ? configuredLevels : 20;
       const totalCapital = Number(strategyTotalCapitalKrw);
       if (!Number.isFinite(totalCapital) || totalCapital <= 0) return NaN;
-      return Math.round((totalCapital * defaultGridRatio) / levels);
+      const levelSettings = readGridLevelSettingsFromContainer();
+      const multiplierTotal = levelSettings.length > 0
+        ? levelSettings.slice(0, levels).reduce((sum, setting) => sum + Number(setting.buyAmountMultiplier || 0), 0)
+        : levels;
+      return Math.round((totalCapital * defaultGridRatio) / multiplierTotal);
     }
 
     function renderOrderAmountDisplay() {
@@ -3436,7 +3455,9 @@ function renderHtml(summary: DashboardSummary, options: ViewOptions): string {
       const multiplierTotal = levelSettings.length > 0
         ? levelSettings.slice(0, levels).reduce((sum, setting) => sum + Number(setting.buyAmountMultiplier || 0), 0)
         : levels;
-      const gridTotal = orderAmount * multiplierTotal;
+      const gridTotal = Number.isFinite(strategyTotalCapitalKrw)
+        ? Math.round(strategyTotalCapitalKrw * defaultGridRatio)
+        : orderAmount * multiplierTotal;
       let positionValue = gridTotal;
       let totalInvestment = gridTotal;
       const farmerCards = [];

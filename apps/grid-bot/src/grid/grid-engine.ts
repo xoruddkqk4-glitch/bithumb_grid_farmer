@@ -131,11 +131,13 @@ export class GridEngine {
       state: {
         ...nextState,
         phase: "GRID",
+        cycleId: randomUUID(),
         gridEntryPrice: null,
         gridEntryReferencePrice: null,
         gridEntryNValue: null,
         gridEntryNCalculatedForKstDate: null,
         gridInvestmentKrw: 0,
+        gridOrderAmountKrw: 0,
         layers: [],
         highestPrice: 0,
         gridResetRequestedAt: null,
@@ -205,7 +207,6 @@ export class GridEngine {
     }
 
     const gapPct = this.inferGridGapPct(state) ?? this.config.gridGapPct;
-    const orderAmountKrw = state.gridOrderAmountKrw || state.layers[0]?.amountKrw || 0;
     const grid = buildGrid({
       entryPrice,
       totalCapitalKrw: state.totalCapitalKrw || this.config.totalCapitalKrw,
@@ -216,17 +217,15 @@ export class GridEngine {
     });
     const layers = grid.layers.map((layer) => {
       const existing = state.layers.find((item) => item.idx === layer.idx);
-      const multiplier = layer.buyAmountMultiplier ?? 1;
       return {
         ...layer,
-        amountKrw: orderAmountKrw > 0 ? roundKrw(orderAmountKrw * multiplier) : layer.amountKrw,
         buyCount: existing?.buyCount ?? layer.buyCount,
         sellCount: existing?.sellCount ?? layer.sellCount,
       };
     });
 
     console.log(
-      `[grid-bot] reanchored grid first buy ${currentFirstLayer?.buyPrice ?? "-"} -> ${entryPlan.firstBuyPrice} reference=${entryPlan.referencePrice} n=${entryPlan.nValue} levels=${layers.length} orderAmountKrw=${layers[0]?.amountKrw ?? grid.sizing.orderAmountKrw}`,
+      `[grid-bot] reanchored grid first buy ${currentFirstLayer?.buyPrice ?? "-"} -> ${entryPlan.firstBuyPrice} reference=${entryPlan.referencePrice} n=${entryPlan.nValue} levels=${layers.length} orderAmountKrw=${grid.sizing.orderAmountKrw} multiplierTotal=${grid.sizing.multiplierTotal}`,
     );
 
     return {
@@ -236,7 +235,7 @@ export class GridEngine {
       gridEntryNValue: entryPlan.nValue,
       gridEntryNCalculatedForKstDate: entryPlan.calculatedForKstDate,
       gridInvestmentKrw: layers.reduce((sum, layer) => sum + layer.amountKrw, 0),
-      gridOrderAmountKrw: orderAmountKrw > 0 ? orderAmountKrw : grid.sizing.orderAmountKrw,
+      gridOrderAmountKrw: grid.sizing.orderAmountKrw,
       gridLevelSettings: state.gridLevelSettings ?? buildDefaultGridLevelSettings(layers.length, gapPct),
       layers,
       highestPrice: Math.max(state.highestPrice, entryPrice),

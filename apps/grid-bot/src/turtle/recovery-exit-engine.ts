@@ -415,13 +415,6 @@ function rebuildGridAfterFullRecoveryExit(
     gapPct,
     levelSettings,
   });
-  const orderAmountKrw = state.gridOrderAmountKrw > 0
-    ? state.gridOrderAmountKrw
-    : grid.sizing.orderAmountKrw;
-  const layers = orderAmountKrw > 0
-    ? grid.layers.map((layer) => ({ ...layer, amountKrw: roundKrw(orderAmountKrw * (layer.buyAmountMultiplier ?? 1)) }))
-    : grid.layers;
-
   return {
     ...state,
     phase: "GRID",
@@ -430,10 +423,10 @@ function rebuildGridAfterFullRecoveryExit(
     gridEntryReferencePrice: null,
     gridEntryNValue: state.gridEntryNValue ?? null,
     gridEntryNCalculatedForKstDate: state.gridEntryNCalculatedForKstDate ?? null,
-    gridInvestmentKrw: layers.reduce((sum, layer) => sum + layer.amountKrw, 0),
-    gridOrderAmountKrw: orderAmountKrw,
+    gridInvestmentKrw: grid.layers.reduce((sum, layer) => sum + layer.amountKrw, 0),
+    gridOrderAmountKrw: grid.sizing.orderAmountKrw,
     gridLevelSettings: levelSettings,
-    layers,
+    layers: grid.layers,
     farmerStage: 0,
     farmerAnchorPrice: null,
     farmerLastBuyAt: null,

@@ -6,11 +6,13 @@ export interface GridSizingInput {
   totalCapitalKrw: number;
   gridRatio?: number;
   levels?: number;
+  levelSettings?: GridLevelSetting[] | undefined;
 }
 
 export interface GridSizing {
   gridInvestmentKrw: number;
   orderAmountKrw: number;
+  multiplierTotal: number;
 }
 
 export function calculateGridSizing(input: GridSizingInput): GridSizing {
@@ -22,15 +24,31 @@ export function calculateGridSizing(input: GridSizingInput): GridSizing {
   assertPositiveNumber("levels", levels);
 
   const gridInvestmentKrw = roundKrw(input.totalCapitalKrw * gridRatio);
+  const multiplierTotal = calculateGridMultiplierTotal(levels, input.levelSettings);
   return {
     gridInvestmentKrw,
-    orderAmountKrw: roundKrw(gridInvestmentKrw / levels),
+    orderAmountKrw: roundKrw(gridInvestmentKrw / multiplierTotal),
+    multiplierTotal,
   };
+}
+
+export function calculateGridMultiplierTotal(
+  levels: number,
+  levelSettings?: GridLevelSetting[] | undefined,
+): number {
+  assertPositiveNumber("levels", levels);
+  return Array.from({ length: levels }, (_, index) =>
+    normalizeGridLevelSetting(
+      levelSettings?.find((setting) => setting.level === index + 1),
+      index + 1,
+    ).buyAmountMultiplier,
+  ).reduce((sum, multiplier) => sum + multiplier, 0);
 }
 
 export interface GenerateGridLayersInput {
   entryPrice: number;
   orderAmountKrw: number;
+  targetInvestmentKrw?: number | undefined;
   levels?: number;
   gapPct?: number;
   levelSettings?: GridLevelSetting[] | undefined;
@@ -44,20 +62,31 @@ export function generateGridLayers(input: GenerateGridLayersInput): GridLayer[] 
   assertPositiveNumber("orderAmountKrw", input.orderAmountKrw);
   assertPositiveNumber("levels", levels);
   assertPositiveNumber("gapPct", gapPct);
+  if (input.targetInvestmentKrw != null) {
+    assertPositiveNumber("targetInvestmentKrw", input.targetInvestmentKrw);
+  }
 
   let previousBuyPrice = input.entryPrice;
-  return Array.from({ length: levels }, (_, index) => {
+  const settings = Array.from({ length: levels }, (_, index) => {
     const idx = index + 1;
-    const levelSetting = normalizeGridLevelSetting(input.levelSettings?.find((setting) => setting.level === idx), idx, gapPct);
+    return normalizeGridLevelSetting(input.levelSettings?.find((setting) => setting.level === idx), idx, gapPct);
+  });
+  const roundedAmounts = settings.map((setting) => roundKrw(input.orderAmountKrw * setting.buyAmountMultiplier));
+  if (input.targetInvestmentKrw != null && roundedAmounts.length > 0) {
+    const previousSum = roundedAmounts.slice(0, -1).reduce((sum, amount) => sum + amount, 0);
+    roundedAmounts[roundedAmounts.length - 1] = Math.max(1, roundKrw(input.targetInvestmentKrw - previousSum));
+  }
+
+  return settings.map((levelSetting, index) => {
+    const idx = index + 1;
     const buyPrice = roundKrw(previousBuyPrice * (1 - levelSetting.buyGapPct));
     const sellPrice = roundKrw(buyPrice * (1 + levelSetting.takeProfitPct));
-    const amountKrw = roundKrw(input.orderAmountKrw * levelSetting.buyAmountMultiplier);
     previousBuyPrice = buyPrice;
     return {
       idx,
       buyPrice,
       sellPrice,
-      amountKrw,
+      amountKrw: roundedAmounts[index] ?? roundKrw(input.orderAmountKrw * levelSetting.buyAmountMultiplier),
       buyGapPct: levelSetting.buyGapPct,
       buyAmountMultiplier: levelSetting.buyAmountMultiplier,
       takeProfitPct: levelSetting.takeProfitPct,
