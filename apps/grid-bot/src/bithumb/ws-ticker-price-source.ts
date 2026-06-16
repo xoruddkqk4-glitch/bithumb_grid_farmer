@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { BithumbPublicClient, PriceQuote } from "./bithumb-client";
+import { createWebSocket, type WebSocketLike } from "./node-websocket";
 
 const BITHUMB_PUBLIC_WS_URL = "wss://ws-api.bithumb.com/websocket/v1";
 
@@ -11,7 +12,7 @@ export interface BithumbTickerWebSocketPriceSourceOptions {
 }
 
 export class BithumbTickerWebSocketPriceSource {
-  private socket: WebSocket | null = null;
+  private socket: WebSocketLike | null = null;
   private latestQuote: PriceQuote | null = null;
   private reconnectTimer: unknown | null = null;
   private readonly waiters: Array<{ resolve: (quote: PriceQuote | null) => void }> = [];
@@ -46,9 +47,6 @@ export class BithumbTickerWebSocketPriceSource {
     if (market !== this.options.market) {
       return await this.restClient.getCurrentPrice(market);
     }
-    if (typeof WebSocket === "undefined") {
-      return await this.restClient.getCurrentPrice(market);
-    }
     this.start();
 
     const latest = this.getFreshQuote();
@@ -67,9 +65,9 @@ export class BithumbTickerWebSocketPriceSource {
   }
 
   private connect(): void {
-    if (this.closed || this.socket != null || typeof WebSocket === "undefined") return;
+    if (this.closed || this.socket != null) return;
 
-    const socket = new WebSocket(BITHUMB_PUBLIC_WS_URL);
+    const socket = createWebSocket(BITHUMB_PUBLIC_WS_URL);
     this.socket = socket;
 
     socket.addEventListener("open", () => {
