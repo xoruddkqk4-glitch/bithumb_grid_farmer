@@ -103,6 +103,9 @@ export interface BotState {
   phase: BotPhase;
   cycleId: string;
   gridEntryPrice: number | null;
+  gridEntryReferencePrice?: number | null;
+  gridEntryNValue?: number | null;
+  gridEntryNCalculatedForKstDate?: string | null;
   gridInvestmentKrw: number;
   gridOrderAmountKrw: number;
   gridLevelSettings?: GridLevelSetting[];

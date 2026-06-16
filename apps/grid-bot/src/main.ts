@@ -48,7 +48,7 @@ async function main(): Promise<void> {
     paperExecutor,
     realExecutor,
   });
-  const gridEngine = new GridEngine(config, executor, logger);
+  const gridEngine = new GridEngine(config, bithumb, executor, logger);
   const farmerEngine = new FarmerEngine(config, bithumb, paperExecutor, logger);
   const recoveryExitEngine = new RecoveryExitEngine(config, bithumb, executor, logger);
 

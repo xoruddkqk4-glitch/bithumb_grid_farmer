@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { buildDefaultGridLevelSettings, roundKrw, shouldBuyLayer } from "../../../../packages/shared/src";
+import { buildDefaultGridLevelSettings, normalizeGridLevelSetting, roundKrw, shouldBuyLayer } from "../../../../packages/shared/src";
 import type {
   BotState,
   GridDecisionSummary,
@@ -9,13 +9,15 @@ import type {
 } from "../../../../packages/shared/src/types";
 import type { GridBotConfig } from "../config";
 import type { JsonlTradeLogger } from "../storage/logger";
-import type { PriceQuote } from "../bithumb/bithumb-client";
+import { filterConfirmedDayCandles, type BithumbPublicClient, type PriceQuote } from "../bithumb/bithumb-client";
+import { calculateTurtleDailyIndicators } from "../turtle/turtle-indicators";
 import { buildGrid } from "./grid-levels";
 import { canBuyGrid, canSellGrid } from "./grid-state-machine";
 
 export class GridEngine {
   constructor(
     private readonly config: GridBotConfig,
+    private readonly publicClient: BithumbPublicClient,
     private readonly executor: OrderExecutor,
     private readonly logger: JsonlTradeLogger,
   ) {}
@@ -25,7 +27,7 @@ export class GridEngine {
     quote: PriceQuote,
     controls?: { enableGridBuy?: boolean; enableGridSell?: boolean },
   ): Promise<{ state: BotState; summary: GridDecisionSummary }> {
-    let nextState = this.reanchorGridBeforeFirstBuy(this.ensureGridInitialized(state, quote.tradePrice), quote.tradePrice);
+    let nextState = await this.ensureGridInitialized(state, quote);
     const summary: GridDecisionSummary = {
       initialized: nextState !== state,
       buys: 0,
@@ -46,10 +48,22 @@ export class GridEngine {
       summary.sells = sellResult.count;
     }
 
+    if (
+      canBuyGrid(nextState.phase) &&
+      !hasOpenGridPosition(nextState) &&
+      shouldRefreshGridFirstBuyBeforeBuy(nextState)
+    ) {
+      nextState = await this.reanchorGridBeforeFirstBuy(nextState, quote);
+    }
+
     if (canBuyGrid(nextState.phase) && (controls?.enableGridBuy ?? this.config.enableGridBuy)) {
       const buyResult = await this.processBuys(nextState, quote);
       nextState = buyResult.state;
       summary.buys = buyResult.count;
+    }
+
+    if (summary.buys === 0 && canBuyGrid(nextState.phase) && !hasOpenGridPosition(nextState)) {
+      nextState = await this.reanchorGridBeforeFirstBuy(nextState, quote);
     }
 
     return { state: nextState, summary };
@@ -79,6 +93,7 @@ export class GridEngine {
 
       nextState = {
         ...nextState,
+        gridEntryReferencePrice: null,
         layers: nextState.layers.map((item) =>
           item.idx === layer.idx
             ? {
@@ -123,25 +138,35 @@ export class GridEngine {
     };
   }
 
-  private ensureGridInitialized(state: BotState, entryPrice: number): BotState {
+  private async ensureGridInitialized(state: BotState, quote: PriceQuote): Promise<BotState> {
     if (state.gridEntryPrice != null && state.layers.length > 0) {
       return state;
     }
 
+    const entryPlan = state.phase === "GRID"
+      ? await this.resolveGridFirstBuyPlan(state, quote)
+      : null;
+    const entryPrice = entryPlan?.entryPrice ?? quote.tradePrice;
+    const levels = this.config.gridLevels;
+    const gapPct = this.config.gridGapPct;
+    const gridLevelSettings =
+      state.gridLevelSettings ?? buildDefaultGridLevelSettings(levels, gapPct);
     const grid = buildGrid({
       entryPrice,
       totalCapitalKrw: state.totalCapitalKrw || this.config.totalCapitalKrw,
       gridRatio: this.config.gridRatio,
-      levels: this.config.gridLevels,
-      gapPct: this.config.gridGapPct,
-      levelSettings: state.gridLevelSettings,
+      levels,
+      gapPct,
+      levelSettings: gridLevelSettings,
     });
-    const gridLevelSettings = state.gridLevelSettings ?? buildDefaultGridLevelSettings(this.config.gridLevels, this.config.gridGapPct);
 
     return {
       ...state,
       phase: "GRID",
       gridEntryPrice: entryPrice,
+      gridEntryReferencePrice: entryPlan?.referencePrice ?? state.gridEntryReferencePrice ?? null,
+      gridEntryNValue: entryPlan?.nValue ?? state.gridEntryNValue ?? null,
+      gridEntryNCalculatedForKstDate: entryPlan?.calculatedForKstDate ?? state.gridEntryNCalculatedForKstDate ?? null,
       gridInvestmentKrw: grid.layers.reduce((sum, layer) => sum + layer.amountKrw, 0),
       gridOrderAmountKrw: grid.sizing.orderAmountKrw,
       gridLevelSettings,
@@ -150,15 +175,25 @@ export class GridEngine {
     };
   }
 
-  private reanchorGridBeforeFirstBuy(state: BotState, entryPrice: number): BotState {
+  private async reanchorGridBeforeFirstBuy(state: BotState, quote: PriceQuote): Promise<BotState> {
     if (state.phase !== "GRID" || state.gridEntryPrice == null || state.layers.length === 0) {
       return state;
     }
-    if (entryPrice <= state.gridEntryPrice) {
+    if (hasOpenGridPosition(state)) {
       return state;
     }
-    if (state.layers.some((layer) => layer.status === "OPEN" || layer.qty > 0)) {
-      return state;
+
+    const entryPlan = await this.resolveGridFirstBuyPlan(state, quote);
+    if (entryPlan == null) return state;
+    const entryPrice = entryPlan.entryPrice;
+    const currentFirstLayer = state.layers.find((layer) => layer.idx === 1);
+    if (currentFirstLayer != null && currentFirstLayer.buyPrice === entryPlan.firstBuyPrice) {
+      return {
+        ...state,
+        gridEntryReferencePrice: entryPlan.referencePrice,
+        gridEntryNValue: entryPlan.nValue,
+        gridEntryNCalculatedForKstDate: entryPlan.calculatedForKstDate,
+      };
     }
 
     const gapPct = this.inferGridGapPct(state) ?? this.config.gridGapPct;
@@ -183,12 +218,15 @@ export class GridEngine {
     });
 
     console.log(
-      `[grid-bot] reanchored grid entry ${state.gridEntryPrice} -> ${entryPrice} levels=${layers.length} orderAmountKrw=${layers[0]?.amountKrw ?? grid.sizing.orderAmountKrw}`,
+      `[grid-bot] reanchored grid first buy ${currentFirstLayer?.buyPrice ?? "-"} -> ${entryPlan.firstBuyPrice} reference=${entryPlan.referencePrice} n=${entryPlan.nValue} levels=${layers.length} orderAmountKrw=${layers[0]?.amountKrw ?? grid.sizing.orderAmountKrw}`,
     );
 
     return {
       ...state,
       gridEntryPrice: entryPrice,
+      gridEntryReferencePrice: entryPlan.referencePrice,
+      gridEntryNValue: entryPlan.nValue,
+      gridEntryNCalculatedForKstDate: entryPlan.calculatedForKstDate,
       gridInvestmentKrw: layers.reduce((sum, layer) => sum + layer.amountKrw, 0),
       gridOrderAmountKrw: orderAmountKrw > 0 ? orderAmountKrw : grid.sizing.orderAmountKrw,
       gridLevelSettings: state.gridLevelSettings ?? buildDefaultGridLevelSettings(layers.length, gapPct),
@@ -204,6 +242,62 @@ export class GridEngine {
     }
     const gapPct = (state.gridEntryPrice - firstLayer.buyPrice) / state.gridEntryPrice;
     return Number.isFinite(gapPct) && gapPct > 0 ? gapPct : null;
+  }
+
+  private async resolveGridFirstBuyPlan(
+    state: BotState,
+    quote: PriceQuote,
+  ): Promise<{
+    entryPrice: number;
+    firstBuyPrice: number;
+    referencePrice: number;
+    nValue: number;
+    calculatedForKstDate: string;
+  } | null> {
+    const nState = await this.refreshGridEntryNIfNeeded(state);
+    const nValue = nState.gridEntryNValue;
+    if (nValue == null || !Number.isFinite(nValue) || nValue <= 0) {
+      return null;
+    }
+
+    const referencePrice =
+      nState.gridEntryReferencePrice != null && nState.gridEntryReferencePrice > 0
+        ? nState.gridEntryReferencePrice
+        : quote.tradePrice;
+    const firstBuyPrice = roundKrw(Math.max(1, referencePrice - nValue * 0.5));
+    const gapPct = this.inferGridGapPct(nState) ?? this.config.gridGapPct;
+    const levelSettings =
+      nState.gridLevelSettings ?? buildDefaultGridLevelSettings(nState.layers.length || this.config.gridLevels, gapPct);
+    const firstLevelSetting = normalizeGridLevelSetting(levelSettings.find((setting) => setting.level === 1), 1, gapPct);
+    const entryPrice = firstBuyPrice / (1 - firstLevelSetting.buyGapPct);
+    return {
+      entryPrice,
+      firstBuyPrice,
+      referencePrice,
+      nValue,
+      calculatedForKstDate: nState.gridEntryNCalculatedForKstDate ?? currentKstDateKey(),
+    };
+  }
+
+  private async refreshGridEntryNIfNeeded(state: BotState): Promise<BotState> {
+    const todayKst = currentKstDateKey();
+    if (state.gridEntryNValue != null && state.gridEntryNCalculatedForKstDate === todayKst) {
+      return state;
+    }
+
+    const candles = filterConfirmedDayCandles(
+      await this.publicClient.getDayCandles(
+        state.market,
+        Math.max(30, this.config.recoveryTurtleNPeriod + 10),
+      ),
+    );
+    const indicators = calculateTurtleDailyIndicators(candles, this.config.recoveryTurtleNPeriod);
+    return {
+      ...state,
+      gridEntryNValue: indicators.nValue,
+      gridEntryNCalculatedForKstDate: todayKst,
+      nValue: indicators.nValue ?? state.nValue,
+    };
   }
 
   private async processBuys(state: BotState, quote: PriceQuote): Promise<{ state: BotState; count: number }> {
@@ -223,6 +317,7 @@ export class GridEngine {
 
       nextState = {
         ...nextState,
+        gridEntryReferencePrice: null,
         layers: nextState.layers.map((item) =>
           item.idx === layer.idx
             ? {
@@ -298,6 +393,7 @@ export class GridEngine {
               }
             : item,
         ),
+        gridEntryReferencePrice: null,
       };
       count += 1;
 
@@ -332,6 +428,27 @@ export class GridEngine {
       ...record,
     });
   }
+}
+
+function hasOpenGridPosition(state: BotState): boolean {
+  return state.layers.some((layer) => layer.status === "OPEN" || layer.qty > 0);
+}
+
+function shouldRefreshGridFirstBuyBeforeBuy(state: BotState): boolean {
+  return state.gridEntryReferencePrice == null || state.gridEntryNCalculatedForKstDate !== currentKstDateKey();
+}
+
+function currentKstDateKey(value = new Date()): string {
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    timeZone: "Asia/Seoul",
+  }).formatToParts(value);
+  const year = parts.find((part) => part.type === "year")?.value ?? "0000";
+  const month = parts.find((part) => part.type === "month")?.value ?? "01";
+  const day = parts.find((part) => part.type === "day")?.value ?? "01";
+  return `${year}-${month}-${day}`;
 }
 
 function evaluateGridSell(layer: GridLayer, currentPrice: number): { layer: GridLayer; shouldSell: boolean } {
