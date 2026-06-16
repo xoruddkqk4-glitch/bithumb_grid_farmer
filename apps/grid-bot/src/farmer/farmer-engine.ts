@@ -113,7 +113,7 @@ export class FarmerEngine {
 
     let nextState: BotState = {
       ...state,
-      farmerAnchorPrice: state.farmerAnchorPrice ?? (state.farmerStage === 0 ? getLastGridBuyPrice(state) : null),
+      farmerAnchorPrice: state.farmerStage === 0 ? getLastGridBuyPrice(state) : state.farmerAnchorPrice,
       farmerDefenseStatus: sizing.defenseStatus as FarmerDefenseStatus,
       farmerSignal: signal,
     };
@@ -281,7 +281,6 @@ function getLastGridBuyPrice(state: BotState): number | null {
     [...state.layers]
       .filter((layer) => layer.qty > 0 || layer.status === "OPEN")
       .sort((left, right) => right.idx - left.idx)[0] ??
-    [...state.layers].sort((left, right) => right.idx - left.idx)[0] ??
     null;
   if (lastLayer == null) return null;
   if (lastLayer.qty > 0 && lastLayer.amountKrw > 0) {
@@ -292,7 +291,7 @@ function getLastGridBuyPrice(state: BotState): number | null {
 
 function getFarmerLastBuyPrice(state: BotState): number | null {
   if (state.farmerStage === 0) {
-    return state.farmerAnchorPrice ?? getLastGridBuyPrice(state);
+    return getLastGridBuyPrice(state);
   }
   return state.farmerAnchorPrice ?? state.farmerLastBuyPrice ?? null;
 }

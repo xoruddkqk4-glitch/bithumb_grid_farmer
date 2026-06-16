@@ -555,7 +555,6 @@ function getLastGridBuyPrice(state: BotState | null): number | null {
     [...state.layers]
       .filter((layer) => layer.qty > 0 || layer.status === "OPEN")
       .sort((left, right) => right.idx - left.idx)[0] ??
-    [...state.layers].sort((left, right) => right.idx - left.idx)[0] ??
     null;
   if (lastLayer == null) return null;
   if (lastLayer.qty > 0 && lastLayer.amountKrw > 0) {
@@ -567,7 +566,7 @@ function getLastGridBuyPrice(state: BotState | null): number | null {
 function getFarmerBasePrice(state: BotState | null): number | null {
   if (state == null) return null;
   if (state.farmerStage === 0) {
-    return state.farmerAnchorPrice ?? getLastGridBuyPrice(state);
+    return getLastGridBuyPrice(state);
   }
   return state.farmerAnchorPrice ?? state.farmerLastBuyPrice ?? null;
 }
@@ -3263,10 +3262,7 @@ function renderHtml(summary: DashboardSummary, options: ViewOptions): string {
       const activeLayer = layers
         .filter((layer) => layer && (Number(layer.qty || 0) > 0 || layer.status === "OPEN"))
         .sort((left, right) => Number(right.idx || 0) - Number(left.idx || 0))[0];
-      const fallbackLayer = layers
-        .slice()
-        .sort((left, right) => Number(right.idx || 0) - Number(left.idx || 0))[0];
-      const layer = activeLayer || fallbackLayer;
+      const layer = activeLayer || null;
       if (!layer) return null;
       const qty = Number(layer.qty || 0);
       const amountKrw = Number(layer.amountKrw || 0);
@@ -3278,7 +3274,7 @@ function renderHtml(summary: DashboardSummary, options: ViewOptions): string {
     function getFarmerBasePrice(state) {
       if (!state) return null;
       if (Number(state.farmerStage || 0) === 0) {
-        return state.farmerAnchorPrice ?? getLastGridBuyPrice(state);
+        return getLastGridBuyPrice(state);
       }
       return state.farmerAnchorPrice ?? state.farmerLastBuyPrice ?? null;
     }
