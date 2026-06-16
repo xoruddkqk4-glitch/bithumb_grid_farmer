@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { buildRecoveryPosition, roundKrw, roundQty } from "../../../../packages/shared/src";
+import { buildDefaultGridLevelSettings, buildRecoveryPosition, roundKrw, roundQty } from "../../../../packages/shared/src";
 import type {
   BotState,
   OrderExecution,
@@ -406,18 +406,20 @@ function rebuildGridAfterFullRecoveryExit(
 ): BotState {
   const levels = state.layers.length > 0 ? state.layers.length : config.gridLevels;
   const gapPct = inferGridGapPct(state) ?? config.gridGapPct;
+  const levelSettings = state.gridLevelSettings ?? buildDefaultGridLevelSettings(levels, gapPct);
   const grid = buildGrid({
     entryPrice,
     totalCapitalKrw: state.totalCapitalKrw || config.totalCapitalKrw,
     gridRatio: config.gridRatio,
     levels,
     gapPct,
+    levelSettings,
   });
   const orderAmountKrw = state.gridOrderAmountKrw > 0
     ? state.gridOrderAmountKrw
     : grid.sizing.orderAmountKrw;
   const layers = orderAmountKrw > 0
-    ? grid.layers.map((layer) => ({ ...layer, amountKrw: orderAmountKrw }))
+    ? grid.layers.map((layer) => ({ ...layer, amountKrw: roundKrw(orderAmountKrw * (layer.buyAmountMultiplier ?? 1)) }))
     : grid.layers;
 
   return {
@@ -426,7 +428,8 @@ function rebuildGridAfterFullRecoveryExit(
     cycleId: randomUUID(),
     gridEntryPrice: entryPrice,
     gridInvestmentKrw: layers.reduce((sum, layer) => sum + layer.amountKrw, 0),
-    gridOrderAmountKrw: layers[0]?.amountKrw ?? grid.sizing.orderAmountKrw,
+    gridOrderAmountKrw: orderAmountKrw,
+    gridLevelSettings: levelSettings,
     layers,
     farmerStage: 0,
     farmerAnchorPrice: null,

@@ -3,7 +3,7 @@ import {
   generateGridLayers,
   type GridSizing,
 } from "../../../../packages/shared/src/grid-math";
-import type { GridLayer } from "../../../../packages/shared/src/types";
+import type { GridLayer, GridLevelSetting } from "../../../../packages/shared/src/types";
 
 export interface BuildGridInput {
   entryPrice: number;
@@ -11,6 +11,7 @@ export interface BuildGridInput {
   gridRatio: number;
   levels: number;
   gapPct: number;
+  levelSettings?: GridLevelSetting[] | undefined;
 }
 
 export interface BuiltGrid {
@@ -32,6 +33,7 @@ export function buildGrid(input: BuildGridInput): BuiltGrid {
       orderAmountKrw: sizing.orderAmountKrw,
       levels: input.levels,
       gapPct: input.gapPct,
+      levelSettings: input.levelSettings,
     }),
   };
 }

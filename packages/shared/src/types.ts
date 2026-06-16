@@ -71,6 +71,12 @@ export interface GridLayer {
   buyPrice: number;
   sellPrice: number;
   amountKrw: number;
+  buyGapPct?: number;
+  buyAmountMultiplier?: number;
+  takeProfitPct?: number;
+  trailingPullbackPct?: number;
+  trailingActive?: boolean;
+  trailingHighPrice?: number | null;
   qty: number;
   status: GridLayerStatus;
   buyCount: number;
@@ -79,6 +85,14 @@ export interface GridLayer {
   soldAt: string | null;
   buyOrderId: string | null;
   sellOrderId: string | null;
+}
+
+export interface GridLevelSetting {
+  level: number;
+  buyGapPct: number;
+  buyAmountMultiplier: number;
+  takeProfitPct: number;
+  trailingPullbackPct: number;
 }
 
 export interface BotState {
@@ -91,6 +105,7 @@ export interface BotState {
   gridEntryPrice: number | null;
   gridInvestmentKrw: number;
   gridOrderAmountKrw: number;
+  gridLevelSettings?: GridLevelSetting[];
   totalCapitalKrw: number;
   layers: GridLayer[];
   farmerStage: number;

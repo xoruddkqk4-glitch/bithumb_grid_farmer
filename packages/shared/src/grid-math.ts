@@ -1,6 +1,6 @@
 import { DEFAULT_GRID_GAP_PCT, DEFAULT_GRID_LEVELS, DEFAULT_GRID_RATIO } from "./constants";
 import { assertPositiveNumber, roundKrw, roundQty } from "./money";
-import type { GridLayer } from "./types";
+import type { GridLayer, GridLevelSetting } from "./types";
 
 export interface GridSizingInput {
   totalCapitalKrw: number;
@@ -33,6 +33,7 @@ export interface GenerateGridLayersInput {
   orderAmountKrw: number;
   levels?: number;
   gapPct?: number;
+  levelSettings?: GridLevelSetting[] | undefined;
 }
 
 export function generateGridLayers(input: GenerateGridLayersInput): GridLayer[] {
@@ -44,15 +45,25 @@ export function generateGridLayers(input: GenerateGridLayersInput): GridLayer[] 
   assertPositiveNumber("levels", levels);
   assertPositiveNumber("gapPct", gapPct);
 
+  let previousBuyPrice = input.entryPrice;
   return Array.from({ length: levels }, (_, index) => {
     const idx = index + 1;
-    const buyPrice = roundKrw(input.entryPrice * (1 - gapPct * idx));
-    const sellPrice = roundKrw(input.entryPrice * (1 - gapPct * (idx - 1)));
+    const levelSetting = normalizeGridLevelSetting(input.levelSettings?.find((setting) => setting.level === idx), idx, gapPct);
+    const buyPrice = roundKrw(previousBuyPrice * (1 - levelSetting.buyGapPct));
+    const sellPrice = roundKrw(buyPrice * (1 + levelSetting.takeProfitPct));
+    const amountKrw = roundKrw(input.orderAmountKrw * levelSetting.buyAmountMultiplier);
+    previousBuyPrice = buyPrice;
     return {
       idx,
       buyPrice,
       sellPrice,
-      amountKrw: input.orderAmountKrw,
+      amountKrw,
+      buyGapPct: levelSetting.buyGapPct,
+      buyAmountMultiplier: levelSetting.buyAmountMultiplier,
+      takeProfitPct: levelSetting.takeProfitPct,
+      trailingPullbackPct: levelSetting.trailingPullbackPct,
+      trailingActive: false,
+      trailingHighPrice: null,
       qty: 0,
       status: "WAITING",
       buyCount: 0,
@@ -63,6 +74,41 @@ export function generateGridLayers(input: GenerateGridLayersInput): GridLayer[] 
       sellOrderId: null,
     };
   });
+}
+
+export function buildDefaultGridLevelSettings(levels: number, gapPct = DEFAULT_GRID_GAP_PCT): GridLevelSetting[] {
+  assertPositiveNumber("levels", levels);
+  assertPositiveNumber("gapPct", gapPct);
+  return Array.from({ length: levels }, (_, index) => normalizeGridLevelSetting(null, index + 1, gapPct));
+}
+
+export function normalizeGridLevelSetting(
+  setting: Partial<GridLevelSetting> | null | undefined,
+  level: number,
+  fallbackGapPct = DEFAULT_GRID_GAP_PCT,
+): GridLevelSetting {
+  const buyGapPct = Number(setting?.buyGapPct ?? fallbackGapPct);
+  const buyAmountMultiplier = Number(setting?.buyAmountMultiplier ?? 1);
+  const takeProfitPct = Number(setting?.takeProfitPct ?? fallbackGapPct);
+  const trailingPullbackPct = Number(setting?.trailingPullbackPct ?? 0);
+
+  if (!Number.isInteger(level) || level < 1) {
+    throw new Error(`Grid level must be a positive integer. Received: ${level}`);
+  }
+  assertPositiveNumber("buyGapPct", buyGapPct);
+  assertPositiveNumber("buyAmountMultiplier", buyAmountMultiplier);
+  assertPositiveNumber("takeProfitPct", takeProfitPct);
+  if (!Number.isFinite(trailingPullbackPct) || trailingPullbackPct < 0) {
+    throw new Error(`trailingPullbackPct must be zero or positive. Received: ${trailingPullbackPct}`);
+  }
+
+  return {
+    level,
+    buyGapPct,
+    buyAmountMultiplier,
+    takeProfitPct,
+    trailingPullbackPct,
+  };
 }
 
 export function calculateBuyQty(amountKrw: number, price: number): number {

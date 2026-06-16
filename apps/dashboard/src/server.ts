@@ -9,7 +9,12 @@ import {
   DEFAULT_LOOP_INTERVAL_MS,
   DEFAULT_MARKET,
 } from "../../../packages/shared/src/constants";
-import { roundKrw } from "../../../packages/shared/src";
+import {
+  buildDefaultGridLevelSettings,
+  generateGridLayers,
+  normalizeGridLevelSetting,
+  roundKrw,
+} from "../../../packages/shared/src";
 import { reconcileBotState } from "../../../packages/shared/src/reconciliation";
 import { BithumbPrivateClient, BithumbPublicClient } from "../../grid-bot/src/bithumb/bithumb-client";
 import { loadConfig } from "../../grid-bot/src/config";
@@ -19,6 +24,7 @@ import { JsonlTradeLogger } from "../../grid-bot/src/storage/logger";
 import type {
   BotState,
   GridLayer,
+  GridLevelSetting,
   OrderExecution,
   RecoveryExitSignalState,
   RecoveryTrailingActivationMode,
@@ -596,7 +602,7 @@ async function readRequestBody(request: import("node:http").IncomingMessage): Pr
     let body = "";
     request.on("data", (chunk) => {
       body += String(chunk);
-      if (body.length > 20_000) {
+      if (body.length > 80_000) {
         rejectBody(new Error("Request body is too large."));
       }
     });
@@ -623,6 +629,7 @@ function parseGridSettingsBody(body: string): {
   gapPct: number;
   orderAmountKrw: number;
   gridLevels: number;
+  gridLevelSettings: GridLevelSetting[];
   maxFarmerStages: number;
   farmerEntryPct: number;
   farmerMax3dDrawdownPct: number;
@@ -660,6 +667,7 @@ function parseGridSettingsBody(body: string): {
     gapPct?: unknown;
     orderAmountKrw?: unknown;
     gridLevels?: unknown;
+    gridLevelSettings?: unknown;
     maxFarmerStages?: unknown;
     farmerEntryPct?: unknown;
     farmerMax3dDrawdownPct?: unknown;
@@ -738,6 +746,7 @@ function parseGridSettingsBody(body: string): {
   if (!Number.isInteger(gridLevels) || gridLevels < 1 || gridLevels > 100) {
     throw new Error("Grid levels must be an integer between 1 and 100.");
   }
+  const gridLevelSettings = parseGridLevelSettings(parsed.gridLevelSettings, gridLevels, gapPct);
   if (!Number.isInteger(maxFarmerStages) || maxFarmerStages < 0 || maxFarmerStages > 10) {
     throw new Error("Farmer stages must be an integer between 0 and 10.");
   }
@@ -808,6 +817,7 @@ function parseGridSettingsBody(body: string): {
     gapPct,
     orderAmountKrw: Math.round(orderAmountKrw),
     gridLevels,
+    gridLevelSettings,
     maxFarmerStages,
     farmerEntryPct,
     farmerMax3dDrawdownPct,
@@ -850,33 +860,82 @@ function parseRecoveryTrailingActivationMode(value: unknown): RecoveryTrailingAc
   throw new Error("2N trailing activation mode must be PROFIT_POSITIVE, TP1, or TP2.");
 }
 
+function parseGridLevelSettings(value: unknown, levels: number, fallbackGapPct: number): GridLevelSetting[] {
+  const rawSettings = Array.isArray(value) ? value : [];
+  return Array.from({ length: levels }, (_, index) => {
+    const level = index + 1;
+    const raw = rawSettings.find(
+      (setting) =>
+        typeof setting === "object" &&
+        setting != null &&
+        Number((setting as { level?: unknown }).level) === level,
+    ) as Partial<GridLevelSetting> | undefined;
+    const normalized = normalizeGridLevelSetting(raw, level, fallbackGapPct);
+    if (normalized.buyGapPct < 0.001 || normalized.buyGapPct > 0.2) {
+      throw new Error(`Grid level ${level} buy gap must be between 0.1% and 20%.`);
+    }
+    if (normalized.buyAmountMultiplier < 0.01 || normalized.buyAmountMultiplier > 100) {
+      throw new Error(`Grid level ${level} buy amount multiplier must be between 0.01x and 100x.`);
+    }
+    if (normalized.takeProfitPct < 0.001 || normalized.takeProfitPct > 1) {
+      throw new Error(`Grid level ${level} take profit must be between 0.1% and 100%.`);
+    }
+    if (normalized.trailingPullbackPct < 0 || normalized.trailingPullbackPct > 0.2) {
+      throw new Error(`Grid level ${level} trailing pullback must be between 0% and 20%.`);
+    }
+    return normalized;
+  });
+}
+
+function getGridLevelSettings(state: BotState | null, levels: number, fallbackGapPct: number): GridLevelSetting[] {
+  if (state == null) return buildDefaultGridLevelSettings(levels, fallbackGapPct);
+  const existingSettings = state?.gridLevelSettings;
+  return Array.from({ length: levels }, (_, index) => {
+    const level = index + 1;
+    const configured = existingSettings?.find((setting) => setting.level === level);
+    const layer = state?.layers.find((item) => item.idx === level);
+    const derived: Partial<GridLevelSetting> = { level };
+    if (layer?.buyGapPct != null) derived.buyGapPct = layer.buyGapPct;
+    if (layer?.buyAmountMultiplier != null) derived.buyAmountMultiplier = layer.buyAmountMultiplier;
+    if (layer?.takeProfitPct != null) derived.takeProfitPct = layer.takeProfitPct;
+    if (layer?.trailingPullbackPct != null) derived.trailingPullbackPct = layer.trailingPullbackPct;
+    return normalizeGridLevelSetting(configured ?? derived, level, fallbackGapPct);
+  });
+}
+
 function rebuildGridLayers(params: {
   state: BotState;
   entryPrice: number;
   gapPct: number;
   orderAmountKrw: number;
   gridLevels: number;
+  gridLevelSettings: GridLevelSetting[];
 }): GridLayer[] {
-  return Array.from({ length: params.gridLevels }, (_, index) => {
-    const idx = index + 1;
-    const existing = params.state.layers.find((layer) => layer.idx === idx);
+  const generatedLayers = generateGridLayers({
+    entryPrice: params.entryPrice,
+    orderAmountKrw: params.orderAmountKrw,
+    levels: params.gridLevels,
+    gapPct: params.gapPct,
+    levelSettings: params.gridLevelSettings,
+  });
+  return generatedLayers.map((generatedLayer) => {
+    const existing = params.state.layers.find((layer) => layer.idx === generatedLayer.idx);
+    if (existing == null || (existing.status !== "OPEN" && existing.qty <= 0)) {
+      return generatedLayer;
+    }
     return {
-    ...(existing ?? {
-      idx,
-      qty: 0,
-      status: "WAITING" as const,
-      buyCount: 0,
-      sellCount: 0,
-      boughtAt: null,
-      soldAt: null,
-      buyOrderId: null,
-      sellOrderId: null,
-    }),
-    buyPrice: Math.round(params.entryPrice * (1 - params.gapPct * idx)),
-    sellPrice: Math.round(params.entryPrice * (1 - params.gapPct * (idx - 1))),
-    amountKrw: existing == null || (existing.status !== "OPEN" && existing.qty <= 0)
-      ? params.orderAmountKrw
-      : existing.amountKrw,
+      ...generatedLayer,
+      amountKrw: existing.amountKrw,
+      qty: existing.qty,
+      status: existing.status,
+      buyCount: existing.buyCount,
+      sellCount: existing.sellCount,
+      boughtAt: existing.boughtAt,
+      soldAt: existing.soldAt,
+      buyOrderId: existing.buyOrderId,
+      sellOrderId: existing.sellOrderId,
+      trailingActive: existing.trailingActive ?? generatedLayer.trailingActive ?? false,
+      trailingHighPrice: existing.trailingHighPrice ?? generatedLayer.trailingHighPrice ?? null,
     };
   });
 }
@@ -913,6 +972,7 @@ async function updateGridSettings(body: string): Promise<{
     gapPct: settings.gapPct,
     orderAmountKrw: settings.orderAmountKrw,
     gridLevels: settings.gridLevels,
+    gridLevelSettings: settings.gridLevelSettings,
   });
   const updatedAvailableLayers = layers.filter((layer) => layer.status !== "OPEN" && layer.qty <= 0).length;
   const previousLayerIndexes = new Set(state.layers.map((layer) => layer.idx));
@@ -926,6 +986,7 @@ async function updateGridSettings(body: string): Promise<{
     phase: returnedToGrid ? "GRID" : state.phase,
     gridEntryPrice: entryPrice,
     gridOrderAmountKrw: settings.orderAmountKrw,
+    gridLevelSettings: settings.gridLevelSettings,
     gridInvestmentKrw: layers.reduce((sum, layer) => sum + layer.amountKrw, 0),
     layers,
     maxFarmerStages: settings.maxFarmerStages,
@@ -1495,6 +1556,9 @@ function renderHtml(summary: DashboardSummary, options: ViewOptions): string {
   const inactiveLayers = layers.filter((layer) => layer.status !== "OPEN" && layer.qty <= 0);
   const nextGridEntry = getNextGridEntry(layers);
   const currentGapPct = inferGridGapPct(state);
+  const gridLevelCount = layers.length || 20;
+  const gridLevelSettings = getGridLevelSettings(state, gridLevelCount, currentGapPct ?? 0.01);
+  const gridLevelSettingsJson = escapeHtml(JSON.stringify(gridLevelSettings));
   const maxFarmerStages = state?.maxFarmerStages ?? 3;
   const farmerEntryPct = state?.farmerEntryPct ?? DEFAULT_FARMER_ENTRY_PCT;
   const farmerMax3dDrawdownPct = state?.farmerMax3dDrawdownPct ?? DEFAULT_FARMER_MAX_3D_DRAWDOWN_PCT;
@@ -2210,6 +2274,40 @@ function renderHtml(summary: DashboardSummary, options: ViewOptions): string {
       background: #fbfdff;
       font-size: 12px;
     }
+    .grid-level-settings {
+      grid-column: 1 / -1;
+      display: grid;
+      gap: 8px;
+    }
+    .grid-level-setting-row {
+      display: grid;
+      grid-template-columns: 72px repeat(4, minmax(112px, 1fr));
+      gap: 8px;
+      align-items: end;
+      padding: 10px;
+      border: 1px solid #dce5ef;
+      border-radius: 8px;
+      background: #fff;
+    }
+    .grid-level-setting-index {
+      min-height: 38px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      border-radius: 6px;
+      background: #eef4fa;
+      color: #344153;
+      font-size: 12px;
+      font-weight: 900;
+    }
+    .grid-level-setting-field label {
+      min-height: auto;
+      margin-bottom: 6px;
+      font-size: 11px;
+    }
+    .grid-level-setting-field input {
+      height: 36px;
+    }
     .strategy-adjustment .form-actions {
       padding-top: 4px;
     }
@@ -2321,6 +2419,7 @@ function renderHtml(summary: DashboardSummary, options: ViewOptions): string {
       .telegram-form { grid-template-columns: 1fr 1fr; }
       .bithumb-form { grid-template-columns: 1fr 1fr; }
       .bithumb-test-actions { grid-template-columns: 1fr 1fr; }
+      .grid-level-setting-row { grid-template-columns: 60px repeat(2, minmax(0, 1fr)); }
       .extension-form { grid-template-columns: 1fr; }
       .funding-preview { grid-template-columns: repeat(3, minmax(0, 1fr)); }
     }
@@ -2334,6 +2433,7 @@ function renderHtml(summary: DashboardSummary, options: ViewOptions): string {
       .telegram-form { grid-template-columns: 1fr; }
       .bithumb-form { grid-template-columns: 1fr; }
       .bithumb-test-actions { grid-template-columns: 1fr; }
+      .grid-level-setting-row { grid-template-columns: 1fr; }
       .funding-preview { grid-template-columns: 1fr; }
     }
   </style>
@@ -2444,7 +2544,7 @@ function renderHtml(summary: DashboardSummary, options: ViewOptions): string {
           <div class="settings-section"><h3>그리드 매수 설정</h3></div>
           <div class="field">
             <label for="grid-levels">그리드 차수</label>
-            <input id="grid-levels" name="gridLevels" type="number" min="1" max="100" step="1" value="${layers.length || 20}">
+            <input id="grid-levels" name="gridLevels" type="number" min="1" max="100" step="1" value="${gridLevelCount}">
           </div>
           <div class="field">
             <label for="grid-gap-pct">차수 간격(%)</label>
@@ -2458,6 +2558,8 @@ function renderHtml(summary: DashboardSummary, options: ViewOptions): string {
             <label for="grid-loop-interval">Grid 루프 간격(초)</label>
             <input id="grid-loop-interval" name="gridLoopIntervalSeconds" type="number" min="1" max="86400" step="1" value="${gridLoopIntervalSeconds}">
           </div>
+          <div class="settings-section"><h3>차수별 Grid 설정</h3></div>
+          <div id="grid-level-settings" class="grid-level-settings" data-settings="${gridLevelSettingsJson}"></div>
           <div class="settings-section"><h3>농부 매수 설정</h3></div>
           <div class="field">
             <label for="farmer-stages">농부 최대 매수 차수</label>
@@ -2674,6 +2776,7 @@ function renderHtml(summary: DashboardSummary, options: ViewOptions): string {
     const orderAmountInput = document.getElementById("grid-order-amount");
     const gridLevelsInput = document.getElementById("grid-levels");
     const gridGapPctInput = document.getElementById("grid-gap-pct");
+    const gridLevelSettingsContainer = document.getElementById("grid-level-settings");
     const farmerStagesInput = document.getElementById("farmer-stages");
     const farmerEntryPctInput = document.getElementById("farmer-entry-pct");
     const fundingPreview = document.getElementById("funding-preview");
@@ -2914,6 +3017,70 @@ function renderHtml(summary: DashboardSummary, options: ViewOptions): string {
 
     setInterval(refreshLogTail, 3000);
 
+    function parseInitialGridLevelSettings() {
+      if (!gridLevelSettingsContainer) return [];
+      try {
+        const parsed = JSON.parse(gridLevelSettingsContainer.dataset.settings || "[]");
+        return Array.isArray(parsed) ? parsed : [];
+      } catch (_error) {
+        return [];
+      }
+    }
+
+    const initialGridLevelSettings = parseInitialGridLevelSettings();
+
+    function getGridLevelFallbackPercent() {
+      const value = Number(gridGapPctInput ? gridGapPctInput.value : 1);
+      return Number.isFinite(value) && value > 0 ? value : 1;
+    }
+
+    function readGridLevelSettingsFromContainer() {
+      if (!gridLevelSettingsContainer) return [];
+      return Array.from(gridLevelSettingsContainer.querySelectorAll(".grid-level-setting-row")).map((row) => {
+        const readField = (field, fallback) => {
+          const input = row.querySelector('[data-field="' + field + '"]');
+          const value = Number(input ? input.value : fallback);
+          return Number.isFinite(value) ? value : fallback;
+        };
+        return {
+          level: Number(row.dataset.level || "0"),
+          buyGapPct: readField("buyGapPct", 1) / 100,
+          buyAmountMultiplier: readField("buyAmountMultiplier", 1),
+          takeProfitPct: readField("takeProfitPct", 1) / 100,
+          trailingPullbackPct: Math.abs(readField("trailingPullbackPct", 0)) / 100,
+        };
+      }).filter((setting) => Number.isInteger(setting.level) && setting.level > 0);
+    }
+
+    function renderGridLevelSettingsRows() {
+      if (!gridLevelSettingsContainer) return;
+      const existingSettings = readGridLevelSettingsFromContainer();
+      const requestedLevels = Math.floor(Number(gridLevelsInput ? gridLevelsInput.value : "20"));
+      const configuredLevels = Number.isFinite(requestedLevels) ? Math.max(1, Math.min(100, requestedLevels)) : 20;
+      const fallbackGapPct = getGridLevelFallbackPercent();
+      const findSetting = (level) =>
+        existingSettings.find((setting) => setting.level === level) ||
+        initialGridLevelSettings.find((setting) => Number(setting.level) === level) ||
+        null;
+      let html = "";
+      for (let level = 1; level <= configuredLevels; level += 1) {
+        const setting = findSetting(level) || {};
+        const buyGapPct = Number.isFinite(Number(setting.buyGapPct)) ? Number(setting.buyGapPct) * 100 : fallbackGapPct;
+        const buyAmountMultiplier = Number.isFinite(Number(setting.buyAmountMultiplier)) ? Number(setting.buyAmountMultiplier) : 1;
+        const takeProfitPct = Number.isFinite(Number(setting.takeProfitPct)) ? Number(setting.takeProfitPct) * 100 : 1;
+        const trailingPullbackPct = Number.isFinite(Number(setting.trailingPullbackPct)) ? -Math.abs(Number(setting.trailingPullbackPct) * 100) : 0;
+        html +=
+          '<div class="grid-level-setting-row" data-level="' + level + '">' +
+          '<div class="grid-level-setting-index">' + level + '차</div>' +
+          '<div class="grid-level-setting-field"><label>이전 차수와의 매수 간격(%)</label><input data-field="buyGapPct" type="number" min="0.1" max="20" step="0.1" value="' + buyGapPct.toFixed(2) + '"></div>' +
+          '<div class="grid-level-setting-field"><label>매입 금액 배수</label><input data-field="buyAmountMultiplier" type="number" min="0.01" max="100" step="0.01" value="' + buyAmountMultiplier.toFixed(2) + '"></div>' +
+          '<div class="grid-level-setting-field"><label>매도 익절 기준(%)</label><input data-field="takeProfitPct" type="number" min="0.1" max="100" step="0.1" value="' + takeProfitPct.toFixed(2) + '"></div>' +
+          '<div class="grid-level-setting-field"><label>트레일링 폴링 기준(%)</label><input data-field="trailingPullbackPct" type="number" min="-20" max="0" step="0.1" value="' + trailingPullbackPct.toFixed(2) + '"></div>' +
+          "</div>";
+      }
+      gridLevelSettingsContainer.innerHTML = html;
+    }
+
     function formatKrw(value) {
       if (!Number.isFinite(value)) return "-";
       return Math.round(value).toLocaleString("ko-KR") + " KRW";
@@ -2925,7 +3092,11 @@ function renderHtml(summary: DashboardSummary, options: ViewOptions): string {
       const levels = configuredLevels;
       const farmerStages = Math.max(0, Math.floor(Number(farmerStagesInput ? farmerStagesInput.value : "3")));
       const orderAmount = Number(orderAmountInput.value);
-      const gridTotal = orderAmount * levels;
+      const levelSettings = readGridLevelSettingsFromContainer();
+      const multiplierTotal = levelSettings.length > 0
+        ? levelSettings.slice(0, levels).reduce((sum, setting) => sum + Number(setting.buyAmountMultiplier || 0), 0)
+        : levels;
+      const gridTotal = orderAmount * multiplierTotal;
       let positionValue = gridTotal;
       let totalInvestment = gridTotal;
       const farmerCards = [];
@@ -3029,10 +3200,17 @@ function renderHtml(summary: DashboardSummary, options: ViewOptions): string {
       orderAmountInput.addEventListener("input", renderStrategyFixedSummary);
     }
     if (gridLevelsInput) {
+      gridLevelsInput.addEventListener("input", renderGridLevelSettingsRows);
       gridLevelsInput.addEventListener("input", renderFundingPreview);
       gridLevelsInput.addEventListener("input", renderStrategyFixedSummary);
     }
-    if (gridGapPctInput) gridGapPctInput.addEventListener("input", renderStrategyFixedSummary);
+    if (gridGapPctInput) {
+      gridGapPctInput.addEventListener("input", renderStrategyFixedSummary);
+      gridGapPctInput.addEventListener("change", () => {
+        renderGridLevelSettingsRows();
+        renderFundingPreview();
+      });
+    }
     if (farmerStagesInput) {
       farmerStagesInput.addEventListener("input", renderFundingPreview);
     }
@@ -3086,6 +3264,7 @@ function renderHtml(summary: DashboardSummary, options: ViewOptions): string {
     if (gridSettingsSubmitButton) {
       gridSettingsSubmitButton.addEventListener("click", (event) => event.stopPropagation());
     }
+    renderGridLevelSettingsRows();
     refreshStrategySummariesSoon();
 
     function syncPartialTakeProfitFields() {
@@ -3428,6 +3607,7 @@ function renderHtml(summary: DashboardSummary, options: ViewOptions): string {
       const gapPct = Number(formData.get("gapPct")) / 100;
       const orderAmountKrw = Number(orderAmountInput.value);
       const gridLevels = Number(formData.get("gridLevels"));
+      const gridLevelSettings = readGridLevelSettingsFromContainer();
       const maxFarmerStages = Number(formData.get("maxFarmerStages"));
       const farmerEntryPct = Number(formData.get("farmerEntryPct")) / 100;
       const farmerMax3dDrawdownPct = -Math.abs(Number(formData.get("farmerMax3dDrawdownPct")) / 100);
@@ -3477,6 +3657,7 @@ function renderHtml(summary: DashboardSummary, options: ViewOptions): string {
             gapPct,
             orderAmountKrw,
             gridLevels,
+            gridLevelSettings,
             maxFarmerStages,
             farmerEntryPct,
             farmerMax3dDrawdownPct,
