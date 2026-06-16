@@ -512,7 +512,7 @@ function renderStatus(state: BotState | null): string {
     `Phase: ${state.phase}`,
     `Price: ${formatKrw(state.lastPrice)}`,
     `Layers: OPEN ${counts.open} / WAITING ${counts.waiting} / SOLD ${counts.sold}`,
-    `Last Loop: ${state.lastLoopAt ?? "-"}`,
+    `Last Loop: ${formatKstDateTime(state.lastLoopAt)}`,
     `Last Error: ${state.lastError ?? "-"}`,
   ].join("\n");
 }
@@ -704,6 +704,22 @@ function formatKst(date: Date): string {
     minute: "2-digit",
     timeZone: "Asia/Seoul",
   }).format(date);
+}
+
+function formatKstDateTime(value: string | null | undefined): string {
+  if (value == null || value === "") return "-";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "-";
+  return `${new Intl.DateTimeFormat("sv-SE", {
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hourCycle: "h23",
+    timeZone: "Asia/Seoul",
+  }).format(date)} KST`;
 }
 
 async function readNewLogLines(path: string, offset: number): Promise<{ offset: number; records: TradeLogRecord[] }> {
