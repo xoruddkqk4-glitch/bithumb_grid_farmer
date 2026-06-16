@@ -1663,13 +1663,15 @@ function renderHtml(summary: DashboardSummary, options: ViewOptions): string {
         )
       : "",
   ].filter(Boolean).join("");
-  const strategyFixedSummary = `
+  const strategyFixedSummary = strategyToggleGroup(
+    "그리드 매매 조건",
+    `
         <div class="panel"><div class="metric-label">그리드 차수 간격(%)</div><div class="metric-value">${currentGapPct == null ? "-" : `${(currentGapPct * 100).toFixed(2)}%`}</div></div>
-        <div class="panel"><div class="metric-label">차수별 매수 금액</div><div class="metric-value">${formatKrw(state?.gridOrderAmountKrw)}</div></div>
-        <div class="panel"><div class="metric-label">농부 진입 하락률(%)</div><div class="metric-value">${(farmerEntryPct * 100).toFixed(2)}%</div></div>`;
+        <div class="panel"><div class="metric-label">차수별 매수 금액</div><div class="metric-value">${formatKrw(state?.gridOrderAmountKrw)}</div></div>`,
+  );
   const strategyToggleGroups = [
     strategyToggleGroup("농부 매수 조건", farmerToggleCards),
-    strategyToggleGroup("터틀 매도 설정", turtleToggleCards),
+    strategyToggleGroup("터틀 매도 조건", turtleToggleCards),
   ].filter(Boolean).join("");
   const strategyToggleSummary =
     strategyToggleGroups || '<div class="strategy-toggle-empty">전략 조정에서 켜진 토글 메뉴가 없습니다.</div>';
@@ -2624,7 +2626,7 @@ function renderHtml(summary: DashboardSummary, options: ViewOptions): string {
             <label for="farmer-use-volatility-explosion-filter">변동성 폭발 구간</label>
             <label class="checkbox-field"><input id="farmer-use-volatility-explosion-filter" name="farmerUseVolatilityExplosionFilter" type="checkbox" ${farmerUseVolatilityExplosionFilter ? "checked" : ""}> 매수 필터 적용</label>
           </div>
-          <div class="settings-section"><h3>터틀 매도 설정</h3></div>
+          <div class="settings-section"><h3>터틀 매도 조건</h3></div>
           <div class="field">
             <label for="recovery-turtle-sell">회복 터틀 매도</label>
             <label class="checkbox-field"><input id="recovery-turtle-sell" name="enableRecoveryTurtleSell" type="checkbox" ${enableRecoveryTurtleSell ? "checked" : ""}> 매도 조건 사용</label>
@@ -3124,11 +3126,10 @@ function renderHtml(summary: DashboardSummary, options: ViewOptions): string {
       if (!strategyFixedSummary) return;
       const orderAmount = Number(orderAmountInput ? orderAmountInput.value : "0");
       const gapPct = Number(gridGapPctInput ? gridGapPctInput.value : "0");
-      const farmerEntryPct = Number(farmerEntryPctInput ? farmerEntryPctInput.value : "0");
-      strategyFixedSummary.innerHTML =
-        '<div class="panel"><div class="metric-label">그리드 차수 간격(%)</div><div class="metric-value">' + (Number.isFinite(gapPct) ? gapPct.toFixed(2) + "%" : "-") + "</div></div>" +
-        '<div class="panel"><div class="metric-label">차수별 매수 금액</div><div class="metric-value">' + formatKrw(orderAmount) + "</div></div>" +
-        '<div class="panel"><div class="metric-label">농부 진입 하락률(%)</div><div class="metric-value">' + (Number.isFinite(farmerEntryPct) ? farmerEntryPct.toFixed(2) + "%" : "-") + "</div></div>";
+      strategyFixedSummary.innerHTML = strategyGroup("그리드 매매 조건", [
+        '<div class="panel"><div class="metric-label">그리드 차수 간격(%)</div><div class="metric-value">' + (Number.isFinite(gapPct) ? gapPct.toFixed(2) + "%" : "-") + "</div></div>",
+        '<div class="panel"><div class="metric-label">차수별 매수 금액</div><div class="metric-value">' + formatKrw(orderAmount) + "</div></div>",
+      ]);
     }
 
     function isChecked(input) {
@@ -3184,7 +3185,7 @@ function renderHtml(summary: DashboardSummary, options: ViewOptions): string {
         isChecked(recoveryUseSliceOrderInput) ? strategyCard("터틀 분할 주문", formatKrw(sliceOrderKrw), sliceIntervalSeconds + "초 간격") : "",
         isChecked(partialTakeProfitInput) ? strategyCard("부분 익절", "TP1 " + tp1ReturnPct.toFixed(2) + "% / " + tp1SellRatio.toFixed(0) + "%", "TP2 " + tp2ReturnPct.toFixed(2) + "% / " + tp2SellRatio.toFixed(0) + "% 매도") : "",
       ].filter(Boolean);
-      const html = strategyGroup("농부 매수 조건", farmerCards) + strategyGroup("터틀 매도 설정", turtleCards);
+      const html = strategyGroup("농부 매수 조건", farmerCards) + strategyGroup("터틀 매도 조건", turtleCards);
       strategyToggleSummary.innerHTML = html || '<div class="strategy-toggle-empty">전략 조정에서 켜진 토글 메뉴가 없습니다.</div>';
     }
 
@@ -3221,7 +3222,6 @@ function renderHtml(summary: DashboardSummary, options: ViewOptions): string {
       farmerStagesInput.addEventListener("input", renderFundingPreview);
     }
     if (farmerEntryPctInput) {
-      farmerEntryPctInput.addEventListener("input", renderStrategyFixedSummary);
       farmerEntryPctInput.addEventListener("input", renderStrategyToggleSummary);
     }
     [
