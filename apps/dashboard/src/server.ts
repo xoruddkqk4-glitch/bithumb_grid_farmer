@@ -224,7 +224,8 @@ async function buildSummary(): Promise<DashboardSummary> {
   const warnings: string[] = [];
   const state = await readJsonFile<BotState>(statePath);
   const allTrades = await readJsonlRecords<TradeLogRecord>(logPath);
-  const recentTrades = allTrades.slice(-10).reverse();
+  const cycleTrades = state == null ? allTrades : allTrades.filter((trade) => trade.cycleId === state.cycleId);
+  const recentTrades = cycleTrades.slice(-10).reverse();
   const botLogLines = await readTextTail(botOutLogPath, 3);
   const layerPerformance = calculateLayerPerformance(allTrades);
   const totalPerformance = calculateRealizedPerformance(allTrades);
@@ -2997,11 +2998,11 @@ function renderHtml(summary: DashboardSummary, options: ViewOptions): string {
     </section>
     ${state?.lastError ? `<section class="section panel error">${escapeHtml(state.lastError)}</section>` : ""}
     <section class="section">
-      <h2>최근 페이퍼 거래 로그 <span class="summary-meta">최근 ${summary.recentTrades.length || 10}개</span></h2>
+      <h2>최근 실거래 로그 <span class="summary-meta">현재 사이클 ${summary.recentTrades.length}개</span></h2>
       <div class="table-wrap scroll-table">
         <table>
           <thead><tr><th>시각</th><th>동작</th><th>차수</th><th>가격</th><th>금액</th><th>손익</th><th>수익률</th></tr></thead>
-          <tbody>${tradeRows || `<tr><td colspan="7">아직 페이퍼 매수/매도 로그가 없습니다. 봇은 정상 실행 중일 수 있습니다.</td></tr>`}</tbody>
+          <tbody>${tradeRows || `<tr><td colspan="7">현재 사이클의 매수/매도 로그가 없습니다. Grid 리셋 후 새 사이클은 여기서 0부터 표시됩니다.</td></tr>`}</tbody>
         </table>
       </div>
     </section>
