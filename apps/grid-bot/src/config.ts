@@ -25,10 +25,16 @@ export interface GridBotConfig {
   gridGapPct: number;
   feeRate: number;
   mockPrice: number | null;
+  useWebSocketTicker: boolean;
+  webSocketTickerStaleMs: number;
+  webSocketTickerFirstQuoteTimeoutMs: number;
   enableRealOrders: boolean;
   realOrdersConfirm: string;
   maxRealOrderKrw: number;
   maxRealTotalCapitalKrw: number;
+  useAggressiveLimitOrders: boolean;
+  aggressiveLimitOffsetPct: number;
+  aggressiveLimitWaitMs: number;
   bithumbAccessKey: string;
   bithumbSecretKey: string;
   enableGridBuy: boolean;
@@ -162,6 +168,15 @@ export function loadConfig(): GridBotConfig {
   const bithumbSecretKey = process.env.BITHUMB_SECRET_KEY || process.env.SECRET_KEY || storedBithumbSettings.secretKey;
   const maxRealOrderKrw = readNumber("GRID_BOT_MAX_REAL_ORDER_KRW", 10_000);
   const maxRealTotalCapitalKrw = readNumber("GRID_BOT_MAX_REAL_TOTAL_CAPITAL_KRW", 1_000_000);
+  const useAggressiveLimitOrders = readBool("GRID_BOT_USE_AGGRESSIVE_LIMIT_ORDERS", true);
+  const aggressiveLimitOffsetPct = readNumber("GRID_BOT_AGGRESSIVE_LIMIT_OFFSET_PCT", 0.0005);
+  const aggressiveLimitWaitMs = readNumber("GRID_BOT_AGGRESSIVE_LIMIT_WAIT_MS", 1_000);
+  if (aggressiveLimitOffsetPct < 0 || aggressiveLimitOffsetPct > 0.05) {
+    throw new Error("GRID_BOT_AGGRESSIVE_LIMIT_OFFSET_PCT must be between 0 and 0.05.");
+  }
+  if (aggressiveLimitWaitMs < 0 || aggressiveLimitWaitMs > 30_000) {
+    throw new Error("GRID_BOT_AGGRESSIVE_LIMIT_WAIT_MS must be between 0 and 30000.");
+  }
 
   if (enableRealOrders) {
     validateRealOrderConfig({
@@ -189,10 +204,16 @@ export function loadConfig(): GridBotConfig {
     gridGapPct: readNumber("GRID_BOT_GRID_GAP_PCT", DEFAULT_GRID_GAP_PCT),
     feeRate: readNumber("GRID_BOT_FEE_RATE", DEFAULT_BITHUMB_FEE_RATE),
     mockPrice,
+    useWebSocketTicker: readBool("GRID_BOT_USE_WEBSOCKET_TICKER", true),
+    webSocketTickerStaleMs: readNumber("GRID_BOT_WS_TICKER_STALE_MS", 5_000),
+    webSocketTickerFirstQuoteTimeoutMs: readNumber("GRID_BOT_WS_TICKER_FIRST_QUOTE_TIMEOUT_MS", 3_000),
     enableRealOrders,
     realOrdersConfirm,
     maxRealOrderKrw,
     maxRealTotalCapitalKrw,
+    useAggressiveLimitOrders,
+    aggressiveLimitOffsetPct,
+    aggressiveLimitWaitMs,
     bithumbAccessKey,
     bithumbSecretKey,
     enableGridBuy: readBool("ENABLE_GRID_BUY", false),

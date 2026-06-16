@@ -5,6 +5,9 @@ export interface RealOrderExecutorOptions {
   enabled: boolean;
   client: BithumbPrivateClient;
   maxOrderKrw: number;
+  useAggressiveLimitOrders: boolean;
+  aggressiveLimitOffsetPct: number;
+  aggressiveLimitWaitMs: number;
 }
 
 export class RealOrderExecutor implements OrderExecutor {
@@ -23,6 +26,14 @@ export class RealOrderExecutor implements OrderExecutor {
     const krwAvailable = await this.options.client.getAvailableBalance("KRW");
     if (krwAvailable < params.amountKrw) {
       throw new Error(`Insufficient KRW balance for real buy. available=${krwAvailable} required=${params.amountKrw}`);
+    }
+    if (this.options.useAggressiveLimitOrders) {
+      const price = calculateAggressiveLimitPrice("BUY", params.price, this.options.aggressiveLimitOffsetPct);
+      return await this.options.client.buyLimit({
+        ...params,
+        price,
+        waitMs: this.options.aggressiveLimitWaitMs,
+      });
     }
     return await this.options.client.buyMarket(params);
   }
@@ -47,6 +58,14 @@ export class RealOrderExecutor implements OrderExecutor {
         `Insufficient ${assetCurrency} balance for real sell. available=${assetAvailable} required=${params.qty}`,
       );
     }
+    if (this.options.useAggressiveLimitOrders) {
+      const price = calculateAggressiveLimitPrice("SELL", params.price, this.options.aggressiveLimitOffsetPct);
+      return await this.options.client.sellLimit({
+        ...params,
+        price,
+        waitMs: this.options.aggressiveLimitWaitMs,
+      });
+    }
     return await this.options.client.sellMarket(params);
   }
 
@@ -60,6 +79,37 @@ export class RealOrderExecutor implements OrderExecutor {
       );
     }
   }
+}
+
+function calculateAggressiveLimitPrice(side: "BUY" | "SELL", referencePrice: number, offsetPct: number): number {
+  if (!Number.isFinite(referencePrice) || referencePrice <= 0) {
+    throw new Error(`Aggressive limit reference price must be positive. Received: ${referencePrice}`);
+  }
+  if (!Number.isFinite(offsetPct) || offsetPct < 0 || offsetPct > 0.05) {
+    throw new Error(`Aggressive limit offset must be between 0 and 5%. Received: ${offsetPct}`);
+  }
+  const rawPrice = side === "BUY" ? referencePrice * (1 + offsetPct) : referencePrice * (1 - offsetPct);
+  return roundToBithumbKrwTick(rawPrice, side === "BUY" ? "UP" : "DOWN");
+}
+
+function roundToBithumbKrwTick(price: number, direction: "UP" | "DOWN"): number {
+  const tick = getBithumbKrwTick(price);
+  const scaled = price / tick;
+  const rounded = direction === "UP" ? Math.ceil(scaled) : Math.floor(scaled);
+  return Math.max(tick, rounded * tick);
+}
+
+function getBithumbKrwTick(price: number): number {
+  if (price >= 1_000_000) return 1_000;
+  if (price >= 500_000) return 500;
+  if (price >= 100_000) return 100;
+  if (price >= 50_000) return 50;
+  if (price >= 10_000) return 10;
+  if (price >= 5_000) return 5;
+  if (price >= 1_000) return 1;
+  if (price >= 100) return 0.1;
+  if (price >= 10) return 0.01;
+  return 0.001;
 }
 
 export function selectOrderExecutor(params: {

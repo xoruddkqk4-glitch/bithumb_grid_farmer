@@ -7,7 +7,7 @@ export interface PriceQuote {
   market: string;
   tradePrice: number;
   timestamp: string;
-  source: "BITHUMB_REST" | "MOCK";
+  source: "BITHUMB_REST" | "BITHUMB_WS" | "MOCK";
 }
 
 export interface DayCandle {
@@ -283,6 +283,41 @@ export class BithumbPrivateClient {
     };
   }
 
+  async buyLimit(params: {
+    market: string;
+    price: number;
+    amountKrw: number;
+    requestId: string;
+    waitMs?: number;
+  }): Promise<OrderExecution> {
+    const qty = calculateBuyQty(params.amountKrw, params.price);
+    const body = {
+      market: params.market,
+      side: "bid",
+      price: String(params.price),
+      volume: String(qty),
+      ord_type: "limit",
+    };
+    const response = await this.postOrder(body);
+    const orderId = readOrderId(response);
+    const order = await this.tryGetOrder(orderId, params.waitMs);
+    const executedQty = readOptionalNumericStringField(order, "executed_volume") ?? qty;
+    const amountKrw = roundKrw(params.price * executedQty);
+    const feeKrw = readOptionalNumericStringField(order, "paid_fee") ?? roundKrw(amountKrw * this.options.feeRate);
+    return {
+      orderId,
+      requestId: params.requestId,
+      market: params.market,
+      side: "BUY",
+      price: params.price,
+      qty: executedQty,
+      amountKrw,
+      feeKrw,
+      executedAt: readOptionalStringField(response, "created_at") ?? new Date().toISOString(),
+      isPaper: false,
+    };
+  }
+
   async sellMarket(params: {
     market: string;
     price: number;
@@ -314,12 +349,46 @@ export class BithumbPrivateClient {
     };
   }
 
+  async sellLimit(params: {
+    market: string;
+    price: number;
+    qty: number;
+    requestId: string;
+    waitMs?: number;
+  }): Promise<OrderExecution> {
+    const body = {
+      market: params.market,
+      side: "ask",
+      price: String(params.price),
+      volume: String(params.qty),
+      ord_type: "limit",
+    };
+    const response = await this.postOrder(body);
+    const orderId = readOrderId(response);
+    const order = await this.tryGetOrder(orderId, params.waitMs);
+    const qty = readOptionalNumericStringField(order, "executed_volume") ?? params.qty;
+    const amountKrw = roundKrw(params.price * qty);
+    const feeKrw = readOptionalNumericStringField(order, "paid_fee") ?? roundKrw(amountKrw * this.options.feeRate);
+    return {
+      orderId,
+      requestId: params.requestId,
+      market: params.market,
+      side: "SELL",
+      price: params.price,
+      qty,
+      amountKrw,
+      feeKrw,
+      executedAt: readOptionalStringField(response, "created_at") ?? new Date().toISOString(),
+      isPaper: false,
+    };
+  }
+
   private async postOrder(body: Record<string, string>): Promise<Record<string, unknown>> {
     return asRecord(await this.authenticatedRequest("POST", "/v1/orders", body));
   }
 
-  private async tryGetOrder(uuid: string): Promise<Record<string, unknown>> {
-    await sleep(1_000);
+  private async tryGetOrder(uuid: string, waitMs = 1_000): Promise<Record<string, unknown>> {
+    await sleep(waitMs);
     try {
       return asRecord(await this.authenticatedRequest("GET", "/v1/order", { uuid }));
     } catch {
@@ -418,6 +487,16 @@ function readStringField(value: Record<string, unknown>, key: string): string {
     throw new Error(`Bithumb order response missing ${key}.`);
   }
   return field;
+}
+
+function readOrderId(value: Record<string, unknown>): string {
+  const uuid = typeof value.uuid === "string" && value.uuid.length > 0 ? value.uuid : null;
+  const orderId = typeof value.order_id === "string" && value.order_id.length > 0 ? value.order_id : null;
+  const id = uuid ?? orderId;
+  if (id == null) {
+    throw new Error("Bithumb order response missing uuid/order_id.");
+  }
+  return id;
 }
 
 function readOptionalStringField(value: Record<string, unknown>, key: string): string | null {

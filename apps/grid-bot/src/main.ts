@@ -9,6 +9,7 @@ import { JsonlTradeLogger } from "./storage/logger";
 import { LocalStateStore } from "./storage/local-state-store";
 import { RecoveryExitEngine } from "./turtle/recovery-exit-engine";
 import { BithumbPrivateClient, BithumbPublicClient } from "./bithumb/bithumb-client";
+import { BithumbTickerWebSocketPriceSource } from "./bithumb/ws-ticker-price-source";
 import { sleep } from "./bithumb/rate-limiter";
 import type { BotState } from "../../../packages/shared/src/types";
 
@@ -17,6 +18,17 @@ async function main(): Promise<void> {
   const stateStore = new LocalStateStore(config.statePath);
   const logger = new JsonlTradeLogger(config.logPath);
   const bithumb = new BithumbPublicClient({ mockPrice: config.mockPrice });
+  const priceSource =
+    config.useWebSocketTicker && config.mockPrice == null
+      ? new BithumbTickerWebSocketPriceSource(bithumb, {
+          market: config.market,
+          staleAfterMs: config.webSocketTickerStaleMs,
+          firstQuoteTimeoutMs: config.webSocketTickerFirstQuoteTimeoutMs,
+        })
+      : bithumb;
+  if (priceSource instanceof BithumbTickerWebSocketPriceSource) {
+    priceSource.start();
+  }
   const bithumbPrivate = new BithumbPrivateClient({
     accessKey: config.bithumbAccessKey,
     secretKey: config.bithumbSecretKey,
@@ -27,6 +39,9 @@ async function main(): Promise<void> {
     enabled: config.enableRealOrders,
     client: bithumbPrivate,
     maxOrderKrw: config.maxRealOrderKrw,
+    useAggressiveLimitOrders: config.useAggressiveLimitOrders,
+    aggressiveLimitOffsetPct: config.aggressiveLimitOffsetPct,
+    aggressiveLimitWaitMs: config.aggressiveLimitWaitMs,
   });
   const executor = selectOrderExecutor({
     enableRealOrders: config.enableRealOrders,
@@ -59,7 +74,7 @@ async function main(): Promise<void> {
   }
 
   console.log(
-    `[grid-bot] started botId=${config.botId} market=${config.market} realOrders=${config.enableRealOrders}`,
+    `[grid-bot] started botId=${config.botId} market=${config.market} realOrders=${config.enableRealOrders} ticker=${priceSource instanceof BithumbTickerWebSocketPriceSource ? "websocket" : "rest"} realOrderMode=${config.useAggressiveLimitOrders ? "aggressive-limit" : "market"}`,
   );
 
   let loops = 0;
@@ -72,7 +87,7 @@ async function main(): Promise<void> {
         state = restoredState;
         await stateStore.writeAtomic(state);
       }
-      const quote = await bithumb.getCurrentPrice(config.market);
+      const quote = await priceSource.getCurrentPrice(config.market);
       const safetySwitch = await readSafetySwitch();
 
       if (safetySwitch.paused) {

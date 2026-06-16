@@ -1249,6 +1249,9 @@ async function executeBithumbLiveTestOrder(body: string): Promise<{
     enabled: true,
     client: privateClient,
     maxOrderKrw: side === "SELL" ? BITHUMB_LIVE_TEST_ORDER_KRW * 1.2 : BITHUMB_LIVE_TEST_ORDER_KRW,
+    useAggressiveLimitOrders: true,
+    aggressiveLimitOffsetPct: 0.0005,
+    aggressiveLimitWaitMs: 1_000,
   });
   const requestId = randomUUID();
   const execution = side === "BUY"
@@ -1450,6 +1453,9 @@ async function requestGridReset(): Promise<{
       enabled: gridConfig.enableRealOrders,
       client: privateClient,
       maxOrderKrw: gridConfig.maxRealOrderKrw,
+      useAggressiveLimitOrders: gridConfig.useAggressiveLimitOrders,
+      aggressiveLimitOffsetPct: gridConfig.aggressiveLimitOffsetPct,
+      aggressiveLimitWaitMs: gridConfig.aggressiveLimitWaitMs,
     }),
   });
   const logger = new JsonlTradeLogger(logPath);
