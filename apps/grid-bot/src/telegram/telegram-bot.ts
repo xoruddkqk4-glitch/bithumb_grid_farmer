@@ -609,18 +609,29 @@ function renderGridBatch(stages: number[], trades: TradeLogRecord[], state: BotS
 
 function renderDailyReport(trades: TradeLogRecord[], state: BotState | null, window: DateWindow): string {
   const windowTrades = filterTradesByWindow(trades, window);
-  const buyCount = windowTrades.filter((trade) => trade.action === "GRID_BUY").length;
-  const sellCount = windowTrades.filter((trade) => trade.action === "GRID_SELL").length;
+  const periodBuyCount = windowTrades.filter((trade) => trade.action === "GRID_BUY").length;
+  const periodSellCount = windowTrades.filter((trade) => trade.action === "GRID_SELL").length;
+  const currentCycleTrades = filterTradesByCycle(windowTrades, state?.cycleId ?? null);
+  const currentCycleBuyCount = currentCycleTrades.filter((trade) => trade.action === "GRID_BUY").length;
+  const currentCycleSellCount = currentCycleTrades.filter((trade) => trade.action === "GRID_SELL").length;
   const today = calculateRealizedPnl(windowTrades);
   const total = calculateRealizedPnl(trades);
   const holding = calculateHoldingSummary(state);
+  const counts = countLayers(state?.layers ?? []);
   return [
     "[Daily Grid Report]",
     `Period: ${formatKst(window.start)} - ${formatKst(window.end)} KST`,
     `Market: ${state?.market ?? "-"}`,
+    `Current Cycle: ${state?.cycleId ?? "-"}`,
     "",
-    `Buy fills: ${buyCount}`,
-    `Sell fills: ${sellCount}`,
+    "[Period Logs]",
+    `Buy fills: ${periodBuyCount}`,
+    `Sell fills: ${periodSellCount}`,
+    "",
+    "[Current Cycle]",
+    `Buy fills: ${currentCycleBuyCount}`,
+    `Sell fills: ${currentCycleSellCount}`,
+    `Layers: OPEN ${counts.open} / WAITING ${counts.waiting} / SOLD ${counts.sold}`,
     "",
     `Today Realized PNL: ${formatKrw(today.pnlKrw)}`,
     `Total Realized PNL: ${formatKrw(total.pnlKrw)}`,
@@ -644,6 +655,11 @@ function calculateRealizedPnl(trades: TradeLogRecord[]): { pnlKrw: number } {
       .filter((trade) => trade.action === "GRID_SELL")
       .reduce((sum, trade) => sum + (trade.realizedPnlKrw ?? 0), 0),
   };
+}
+
+function filterTradesByCycle(trades: TradeLogRecord[], cycleId: string | null): TradeLogRecord[] {
+  if (cycleId == null) return [];
+  return trades.filter((trade) => trade.cycleId === cycleId);
 }
 
 function calculateHoldingSummary(state: BotState | null): { pnlKrw: number; pnlPct: number | null } {
