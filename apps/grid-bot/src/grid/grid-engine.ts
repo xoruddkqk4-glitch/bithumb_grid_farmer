@@ -260,10 +260,11 @@ export class GridEngine {
       return null;
     }
 
-    const referencePrice =
+    const previousReferencePrice =
       nState.gridEntryReferencePrice != null && nState.gridEntryReferencePrice > 0
         ? nState.gridEntryReferencePrice
         : quote.tradePrice;
+    const referencePrice = Math.max(previousReferencePrice, quote.tradePrice);
     const firstBuyPrice = roundKrw(Math.max(1, referencePrice - nValue * 0.5));
     const gapPct = this.inferGridGapPct(nState) ?? this.config.gridGapPct;
     const levelSettings =
