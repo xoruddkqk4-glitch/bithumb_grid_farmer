@@ -279,13 +279,9 @@ function shouldWatchFarmer(state: BotState): boolean {
 function getLastGridBuyPrice(state: BotState): number | null {
   const lastLayer =
     [...state.layers]
-      .filter((layer) => layer.qty > 0 || layer.status === "OPEN")
       .sort((left, right) => right.idx - left.idx)[0] ??
     null;
   if (lastLayer == null) return null;
-  if (lastLayer.qty > 0 && lastLayer.amountKrw > 0) {
-    return lastLayer.amountKrw / lastLayer.qty;
-  }
   return lastLayer.buyPrice > 0 ? lastLayer.buyPrice : null;
 }
 

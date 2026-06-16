@@ -553,13 +553,9 @@ function getLastGridBuyPrice(state: BotState | null): number | null {
   if (state == null || state.layers.length === 0) return null;
   const lastLayer =
     [...state.layers]
-      .filter((layer) => layer.qty > 0 || layer.status === "OPEN")
       .sort((left, right) => right.idx - left.idx)[0] ??
     null;
   if (lastLayer == null) return null;
-  if (lastLayer.qty > 0 && lastLayer.amountKrw > 0) {
-    return lastLayer.amountKrw / lastLayer.qty;
-  }
   return lastLayer.buyPrice > 0 ? lastLayer.buyPrice : null;
 }
 
@@ -3259,14 +3255,10 @@ function renderHtml(summary: DashboardSummary, options: ViewOptions): string {
     function getLastGridBuyPrice(state) {
       const layers = state && Array.isArray(state.layers) ? state.layers : [];
       if (!layers.length) return null;
-      const activeLayer = layers
-        .filter((layer) => layer && (Number(layer.qty || 0) > 0 || layer.status === "OPEN"))
+      const layer = layers
+        .filter((layer) => layer)
         .sort((left, right) => Number(right.idx || 0) - Number(left.idx || 0))[0];
-      const layer = activeLayer || null;
       if (!layer) return null;
-      const qty = Number(layer.qty || 0);
-      const amountKrw = Number(layer.amountKrw || 0);
-      if (qty > 0 && amountKrw > 0) return amountKrw / qty;
       const buyPrice = Number(layer.buyPrice);
       return Number.isFinite(buyPrice) && buyPrice > 0 ? buyPrice : null;
     }
