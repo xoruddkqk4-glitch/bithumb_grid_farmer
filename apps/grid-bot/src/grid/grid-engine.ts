@@ -14,6 +14,9 @@ import { calculateTurtleDailyIndicators } from "../turtle/turtle-indicators";
 import { buildGrid } from "./grid-levels";
 import { canBuyGrid, canSellGrid } from "./grid-state-machine";
 
+const DEFAULT_GRID_FIRST_BUY_MODE = "N_MULTIPLE";
+const DEFAULT_GRID_FIRST_BUY_N_MULTIPLIER = 0.5;
+
 export class GridEngine {
   constructor(
     private readonly config: GridBotConfig,
@@ -225,7 +228,7 @@ export class GridEngine {
     });
 
     console.log(
-      `[grid-bot] reanchored grid first buy ${currentFirstLayer?.buyPrice ?? "-"} -> ${entryPlan.firstBuyPrice} reference=${entryPlan.referencePrice} n=${entryPlan.nValue} levels=${layers.length} orderAmountKrw=${grid.sizing.orderAmountKrw} multiplierTotal=${grid.sizing.multiplierTotal}`,
+      `[grid-bot] reanchored grid first buy ${currentFirstLayer?.buyPrice ?? "-"} -> ${entryPlan.firstBuyPrice} mode=${entryPlan.mode} reference=${entryPlan.referencePrice} n=${entryPlan.nValue ?? "-"} nMultiplier=${entryPlan.nMultiplier ?? "-"} levels=${layers.length} orderAmountKrw=${grid.sizing.orderAmountKrw} multiplierTotal=${grid.sizing.multiplierTotal}`,
     );
 
     return {
@@ -258,21 +261,42 @@ export class GridEngine {
     entryPrice: number;
     firstBuyPrice: number;
     referencePrice: number;
-    nValue: number;
-    calculatedForKstDate: string;
+    nValue: number | null;
+    nMultiplier: number | null;
+    calculatedForKstDate: string | null;
+    mode: "CURRENT_PRICE" | "N_MULTIPLE";
   } | null> {
+    const mode = state.gridFirstBuyMode ?? DEFAULT_GRID_FIRST_BUY_MODE;
+    if (mode === "CURRENT_PRICE") {
+      const firstBuyPrice = roundKrw(Math.max(1, quote.tradePrice));
+      const gapPct = this.inferGridGapPct(state) ?? this.config.gridGapPct;
+      const levelSettings =
+        state.gridLevelSettings ?? buildDefaultGridLevelSettings(state.layers.length || this.config.gridLevels, gapPct);
+      const firstLevelSetting = normalizeGridLevelSetting(levelSettings.find((setting) => setting.level === 1), 1, gapPct);
+      return {
+        entryPrice: firstBuyPrice / (1 - firstLevelSetting.buyGapPct),
+        firstBuyPrice,
+        referencePrice: quote.tradePrice,
+        nValue: state.gridEntryNValue ?? null,
+        nMultiplier: null,
+        calculatedForKstDate: state.gridEntryNCalculatedForKstDate ?? null,
+        mode,
+      };
+    }
+
     const nState = await this.refreshGridEntryNIfNeeded(state);
     const nValue = nState.gridEntryNValue;
     if (nValue == null || !Number.isFinite(nValue) || nValue <= 0) {
       return null;
     }
+    const nMultiplier = normalizeGridFirstBuyNMultiplier(nState.gridFirstBuyNMultiplier);
 
     const previousReferencePrice =
       nState.gridEntryReferencePrice != null && nState.gridEntryReferencePrice > 0
         ? nState.gridEntryReferencePrice
         : quote.tradePrice;
     const referencePrice = Math.max(previousReferencePrice, quote.tradePrice);
-    const firstBuyPrice = roundKrw(Math.max(1, referencePrice - nValue * 0.5));
+    const firstBuyPrice = roundKrw(Math.max(1, referencePrice - nValue * nMultiplier));
     const gapPct = this.inferGridGapPct(nState) ?? this.config.gridGapPct;
     const levelSettings =
       nState.gridLevelSettings ?? buildDefaultGridLevelSettings(nState.layers.length || this.config.gridLevels, gapPct);
@@ -283,7 +307,9 @@ export class GridEngine {
       firstBuyPrice,
       referencePrice,
       nValue,
+      nMultiplier,
       calculatedForKstDate: nState.gridEntryNCalculatedForKstDate ?? currentKstDateKey(),
+      mode,
     };
   }
 
@@ -444,6 +470,10 @@ function hasOpenGridPosition(state: BotState): boolean {
 
 function shouldRefreshGridFirstBuyBeforeBuy(state: BotState): boolean {
   return state.gridEntryReferencePrice == null || state.gridEntryNCalculatedForKstDate !== currentKstDateKey();
+}
+
+function normalizeGridFirstBuyNMultiplier(value: number | undefined): number {
+  return Number.isFinite(value) && value != null && value >= 0 ? value : DEFAULT_GRID_FIRST_BUY_N_MULTIPLIER;
 }
 
 function currentKstDateKey(value = new Date()): string {

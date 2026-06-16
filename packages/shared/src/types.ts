@@ -2,6 +2,8 @@ export type BotPhase = "GRID" | "FARMING" | "HOLDING" | "COOLDOWN";
 
 export type GridLayerStatus = "WAITING" | "OPEN" | "SOLD";
 
+export type GridFirstBuyMode = "CURRENT_PRICE" | "N_MULTIPLE";
+
 export type TradeAction =
   | "GRID_BUY"
   | "GRID_SELL"
@@ -106,6 +108,8 @@ export interface BotState {
   gridEntryReferencePrice?: number | null;
   gridEntryNValue?: number | null;
   gridEntryNCalculatedForKstDate?: string | null;
+  gridFirstBuyMode?: GridFirstBuyMode;
+  gridFirstBuyNMultiplier?: number;
   gridInvestmentKrw: number;
   gridOrderAmountKrw: number;
   gridLevelSettings?: GridLevelSetting[];

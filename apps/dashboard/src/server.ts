@@ -25,6 +25,7 @@ import { RealOrderExecutor, selectOrderExecutor } from "../../grid-bot/src/order
 import { JsonlTradeLogger } from "../../grid-bot/src/storage/logger";
 import type {
   BotState,
+  GridFirstBuyMode,
   GridLayer,
   GridLevelSetting,
   OrderExecution,
@@ -126,6 +127,8 @@ const DEFAULT_TP1_RETURN_PCT = 0.1;
 const DEFAULT_TP1_SELL_RATIO = 0.33;
 const DEFAULT_TP2_RETURN_PCT = 0.2;
 const DEFAULT_TP2_SELL_RATIO = 0.33;
+const DEFAULT_GRID_FIRST_BUY_MODE: GridFirstBuyMode = "N_MULTIPLE";
+const DEFAULT_GRID_FIRST_BUY_N_MULTIPLIER = 0.5;
 const BITHUMB_LIVE_TEST_ORDER_KRW = 10_000;
 const DEFAULT_TELEGRAM_GRID_BUY_NOTIFICATION_MODE = "batch";
 const DEFAULT_TELEGRAM_GRID_SELL_NOTIFICATION_MODE = "immediate";
@@ -669,6 +672,8 @@ function parseGridSettingsBody(body: string, totalCapitalKrw: number): {
   gridInvestmentKrw: number;
   gridLevels: number;
   gridLevelSettings: GridLevelSetting[];
+  gridFirstBuyMode: GridFirstBuyMode;
+  gridFirstBuyNMultiplier: number;
   maxFarmerStages: number;
   farmerEntryPct: number;
   farmerMax3dDrawdownPct: number;
@@ -706,6 +711,8 @@ function parseGridSettingsBody(body: string, totalCapitalKrw: number): {
     gapPct?: unknown;
     gridLevels?: unknown;
     gridLevelSettings?: unknown;
+    gridFirstBuyMode?: unknown;
+    gridFirstBuyNMultiplier?: unknown;
     maxFarmerStages?: unknown;
     farmerEntryPct?: unknown;
     farmerMax3dDrawdownPct?: unknown;
@@ -741,6 +748,8 @@ function parseGridSettingsBody(body: string, totalCapitalKrw: number): {
   };
   const gapPct = Number(parsed.gapPct);
   const gridLevels = Number(parsed.gridLevels);
+  const gridFirstBuyMode = parseGridFirstBuyMode(parsed.gridFirstBuyMode);
+  const gridFirstBuyNMultiplier = Number(parsed.gridFirstBuyNMultiplier ?? DEFAULT_GRID_FIRST_BUY_N_MULTIPLIER);
   const maxFarmerStages = Number(parsed.maxFarmerStages);
   const farmerEntryPct = Number(parsed.farmerEntryPct);
   const farmerMax3dDrawdownPct = Number(parsed.farmerMax3dDrawdownPct);
@@ -779,6 +788,9 @@ function parseGridSettingsBody(body: string, totalCapitalKrw: number): {
   }
   if (!Number.isInteger(gridLevels) || gridLevels < 1 || gridLevels > 100) {
     throw new Error("Grid levels must be an integer between 1 and 100.");
+  }
+  if (!Number.isFinite(gridFirstBuyNMultiplier) || gridFirstBuyNMultiplier < 0 || gridFirstBuyNMultiplier > 10) {
+    throw new Error("Grid first buy N multiplier must be between 0 and 10.");
   }
   const gridLevelSettings = parseGridLevelSettings(parsed.gridLevelSettings, gridLevels, gapPct);
   const gridSizing = calculateGridSizing({
@@ -863,6 +875,8 @@ function parseGridSettingsBody(body: string, totalCapitalKrw: number): {
     gridInvestmentKrw: gridSizing.gridInvestmentKrw,
     gridLevels,
     gridLevelSettings,
+    gridFirstBuyMode,
+    gridFirstBuyNMultiplier,
     maxFarmerStages,
     farmerEntryPct,
     farmerMax3dDrawdownPct,
@@ -903,6 +917,14 @@ function parseRecoveryTrailingActivationMode(value: unknown): RecoveryTrailingAc
     return value;
   }
   throw new Error("2N trailing activation mode must be PROFIT_POSITIVE, TP1, or TP2.");
+}
+
+function parseGridFirstBuyMode(value: unknown): GridFirstBuyMode {
+  if (value == null || value === "") return DEFAULT_GRID_FIRST_BUY_MODE;
+  if (value === "CURRENT_PRICE" || value === "N_MULTIPLE") {
+    return value;
+  }
+  throw new Error("Grid first buy mode must be CURRENT_PRICE or N_MULTIPLE.");
 }
 
 function parseGridLevelSettings(value: unknown, levels: number, fallbackGapPct: number): GridLevelSetting[] {
@@ -1013,6 +1035,7 @@ async function updateGridSettings(body: string): Promise<{
   if (settings.gridLevels < maxHeldLevel) {
     throw new Error(`Grid levels cannot be lower than the highest held level (${maxHeldLevel}).`);
   }
+  const shouldRefreshFirstBuyOnNextTick = maxHeldLevel === 0;
   const layers = rebuildGridLayers({
     state,
     entryPrice,
@@ -1033,8 +1056,12 @@ async function updateGridSettings(body: string): Promise<{
     ...state,
     phase: returnedToGrid ? "GRID" : state.phase,
     gridEntryPrice: entryPrice,
+    gridEntryReferencePrice: shouldRefreshFirstBuyOnNextTick ? null : state.gridEntryReferencePrice ?? null,
+    gridEntryNCalculatedForKstDate: shouldRefreshFirstBuyOnNextTick ? null : state.gridEntryNCalculatedForKstDate ?? null,
     gridOrderAmountKrw: settings.orderAmountKrw,
     gridLevelSettings: settings.gridLevelSettings,
+    gridFirstBuyMode: settings.gridFirstBuyMode,
+    gridFirstBuyNMultiplier: settings.gridFirstBuyNMultiplier,
     gridInvestmentKrw: layers.reduce((sum, layer) => sum + layer.amountKrw, 0),
     layers,
     maxFarmerStages: settings.maxFarmerStages,
@@ -1712,6 +1739,8 @@ function renderHtml(summary: DashboardSummary, options: ViewOptions): string {
   const nextGridEntry = getNextGridEntry(layers);
   const currentGapPct = inferGridGapPct(state);
   const gridLevelCount = layers.length || 20;
+  const gridFirstBuyMode = state?.gridFirstBuyMode ?? DEFAULT_GRID_FIRST_BUY_MODE;
+  const gridFirstBuyNMultiplier = state?.gridFirstBuyNMultiplier ?? DEFAULT_GRID_FIRST_BUY_N_MULTIPLIER;
   const gridLevelSettings = getGridLevelSettings(state, gridLevelCount, currentGapPct ?? 0.01);
   const gridLevelSettingsJson = escapeHtml(JSON.stringify(gridLevelSettings));
   const firstGridLevelSetting = gridLevelSettings[0] ?? null;
@@ -1791,6 +1820,8 @@ function renderHtml(summary: DashboardSummary, options: ViewOptions): string {
   const nextFarmerEntryPrice = getNextFarmerEntryPrice(state, farmerEntryPct);
   const recoveryExitSignal = state?.recoveryExitSignal ?? null;
   const recoveryExitStatus = formatRecoveryExitStatusKo(recoveryExitSignal);
+  const gridFirstBuyModeLabel =
+    gridFirstBuyMode === "CURRENT_PRICE" ? "현재가 진입" : `-${gridFirstBuyNMultiplier}N 진입`;
   const strategyToggleCard = (title: string, value: string, muted?: string): string => `
         <div class="panel">
           <div class="metric-label">${escapeHtml(title)}</div>
@@ -1840,6 +1871,7 @@ function renderHtml(summary: DashboardSummary, options: ViewOptions): string {
       : "",
   ].filter(Boolean).join("");
   const gridConditionCards = `
+        <div class="panel"><div class="metric-label">1차 매수 시점</div><div class="metric-value">${escapeHtml(gridFirstBuyModeLabel)}</div></div>
         <div class="panel"><div class="metric-label">그리드 차수</div><div class="metric-value">${gridLevelCount}</div></div>
         <div class="panel"><div class="metric-label">차수 간격</div><div class="metric-value">${formatRatioPct(currentGapPct)}</div></div>
         <div class="panel"><div class="metric-label">기본 차수별 매수 금액</div><div class="metric-value">${formatKrw(calculatedGridOrderAmountKrw)}</div></div>
@@ -2840,6 +2872,17 @@ function renderHtml(summary: DashboardSummary, options: ViewOptions): string {
             <input id="grid-gap-pct" name="gapPct" type="number" min="0.1" max="20" step="0.1" value="${currentGapPct == null ? "" : (currentGapPct * 100).toFixed(2)}">
           </div>
           <div class="field">
+            <label for="grid-first-buy-mode">1차 매수 시점</label>
+            <select id="grid-first-buy-mode" name="gridFirstBuyMode">
+              <option value="CURRENT_PRICE" ${gridFirstBuyMode === "CURRENT_PRICE" ? "selected" : ""}>현재가 진입</option>
+              <option value="N_MULTIPLE" ${gridFirstBuyMode === "N_MULTIPLE" ? "selected" : ""}>-x * N값 진입</option>
+            </select>
+          </div>
+          <div class="field">
+            <label for="grid-first-buy-n-multiplier">N값 배수 x</label>
+            <input id="grid-first-buy-n-multiplier" name="gridFirstBuyNMultiplier" type="number" min="0" max="10" step="0.1" value="${gridFirstBuyNMultiplier}">
+          </div>
+          <div class="field">
             <label>차수별 매수 금액(KRW)</label>
             <div id="grid-order-amount" class="readonly-metric" data-value="${calculatedGridOrderAmountKrw ?? ""}">${formatKrw(calculatedGridOrderAmountKrw)}</div>
             <div class="muted">계좌 평가금액 × 15.8% ÷ 차수별 배수 합계로 자동 계산됩니다.</div>
@@ -3077,6 +3120,8 @@ function renderHtml(summary: DashboardSummary, options: ViewOptions): string {
     const orderAmountDisplay = document.getElementById("grid-order-amount");
     const gridLevelsInput = document.getElementById("grid-levels");
     const gridGapPctInput = document.getElementById("grid-gap-pct");
+    const gridFirstBuyModeInput = document.getElementById("grid-first-buy-mode");
+    const gridFirstBuyNMultiplierInput = document.getElementById("grid-first-buy-n-multiplier");
     const gridLevelSettingsContainer = document.getElementById("grid-level-settings");
     const farmerStagesInput = document.getElementById("farmer-stages");
     const farmerEntryPctInput = document.getElementById("farmer-entry-pct");
@@ -3447,9 +3492,13 @@ function renderHtml(summary: DashboardSummary, options: ViewOptions): string {
     function buildGridConditionCards() {
       const levelsValue = Number(gridLevelsInput ? gridLevelsInput.value : "0");
       const gapPctValue = Number(gridGapPctInput ? gridGapPctInput.value : "0") / 100;
+      const firstBuyMode = String(gridFirstBuyModeInput ? gridFirstBuyModeInput.value : "N_MULTIPLE");
+      const firstBuyNMultiplier = Number(gridFirstBuyNMultiplierInput ? gridFirstBuyNMultiplierInput.value : "0.5");
+      const firstBuyModeLabel = firstBuyMode === "CURRENT_PRICE" ? "현재가 진입" : "-" + firstBuyNMultiplier + "N 진입";
       const orderAmount = getCalculatedGridOrderAmount();
       const firstLevelSetting = readGridLevelSettingsFromContainer()[0] || {};
       return [
+        strategyCard("1차 매수 시점", firstBuyModeLabel),
         strategyCard("그리드 차수", Number.isFinite(levelsValue) ? String(Math.floor(levelsValue)) : "-"),
         strategyCard("차수 간격", formatPercentValue(gapPctValue)),
         strategyCard("기본 차수별 매수 금액", formatKrw(orderAmount)),
@@ -3581,6 +3630,10 @@ function renderHtml(summary: DashboardSummary, options: ViewOptions): string {
         renderFundingPreview();
       });
     }
+    [gridFirstBuyModeInput, gridFirstBuyNMultiplierInput].filter(Boolean).forEach((input) => {
+      input.addEventListener("input", renderStrategyFixedSummary);
+      input.addEventListener("change", renderStrategyFixedSummary);
+    });
     if (farmerStagesInput) {
       farmerStagesInput.addEventListener("input", renderFundingPreview);
     }
@@ -3987,6 +4040,8 @@ function renderHtml(summary: DashboardSummary, options: ViewOptions): string {
       const gapPct = Number(formData.get("gapPct")) / 100;
       const gridLevels = Number(formData.get("gridLevels"));
       const gridLevelSettings = readGridLevelSettingsFromContainer();
+      const gridFirstBuyMode = String(formData.get("gridFirstBuyMode") || "N_MULTIPLE");
+      const gridFirstBuyNMultiplier = Number(formData.get("gridFirstBuyNMultiplier") || "0.5");
       const maxFarmerStages = Number(formData.get("maxFarmerStages"));
       const farmerEntryPct = Number(formData.get("farmerEntryPct")) / 100;
       const farmerMax3dDrawdownPct = -Math.abs(Number(formData.get("farmerMax3dDrawdownPct")) / 100);
@@ -4036,6 +4091,8 @@ function renderHtml(summary: DashboardSummary, options: ViewOptions): string {
             gapPct,
             gridLevels,
             gridLevelSettings,
+            gridFirstBuyMode,
+            gridFirstBuyNMultiplier,
             maxFarmerStages,
             farmerEntryPct,
             farmerMax3dDrawdownPct,

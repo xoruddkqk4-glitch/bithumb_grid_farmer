@@ -61,6 +61,8 @@ export function createInitialState(input: CreateInitialStateInput): BotState {
     gridEntryReferencePrice: null,
     gridEntryNValue: null,
     gridEntryNCalculatedForKstDate: null,
+    gridFirstBuyMode: "N_MULTIPLE",
+    gridFirstBuyNMultiplier: 0.5,
     gridInvestmentKrw: 0,
     gridOrderAmountKrw: 0,
     totalCapitalKrw: input.totalCapitalKrw,
