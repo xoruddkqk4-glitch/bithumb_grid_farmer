@@ -58,6 +58,25 @@ export class BithumbTickerWebSocketPriceSource {
     return await this.restClient.getCurrentPrice(market);
   }
 
+  async waitForNextQuote(
+    market: string,
+    timeoutMs: number,
+    afterTimestamp?: string | null,
+  ): Promise<PriceQuote | null> {
+    if (market !== this.options.market) {
+      await sleep(timeoutMs);
+      return null;
+    }
+    this.start();
+
+    const latest = this.getFreshQuote();
+    if (latest != null && isAfterQuote(latest, afterTimestamp)) {
+      return latest;
+    }
+
+    return await this.waitForQuote(timeoutMs);
+  }
+
   private getFreshQuote(): PriceQuote | null {
     if (this.latestQuote == null) return null;
     const ageMs = Date.now() - new Date(this.latestQuote.timestamp).getTime();
@@ -184,4 +203,13 @@ function readNumber(value: Record<string, unknown>, key: string): number {
 function readOptionalNumber(value: Record<string, unknown>, key: string): number | null {
   const field = value[key];
   return typeof field === "number" && Number.isFinite(field) ? field : null;
+}
+
+async function sleep(ms: number): Promise<void> {
+  await new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function isAfterQuote(quote: PriceQuote, afterTimestamp?: string | null): boolean {
+  if (afterTimestamp == null) return true;
+  return new Date(quote.timestamp).getTime() > new Date(afterTimestamp).getTime();
 }

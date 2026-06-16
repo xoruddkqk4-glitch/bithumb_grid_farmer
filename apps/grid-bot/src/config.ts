@@ -11,12 +11,15 @@ import {
 } from "../../../packages/shared/src/constants";
 import type { RecoveryTrailingActivationMode } from "../../../packages/shared/src/types";
 
+const DEFAULT_SAFETY_CHECK_INTERVAL_MS = 60_000;
+
 export interface GridBotConfig {
   botId: string;
   market: string;
   statePath: string;
   logPath: string;
   loopIntervalMs: number;
+  safetyCheckIntervalMs: number;
   farmingLoopIntervalMs: number;
   maxLoops: number | null;
   totalCapitalKrw: number;
@@ -196,6 +199,7 @@ export function loadConfig(): GridBotConfig {
     statePath: absolutePath(process.env.GRID_BOT_STATE_PATH || "data/bot_state.json"),
     logPath: absolutePath(process.env.GRID_BOT_LOG_PATH || "data/trading_logs/btc_master_log.jsonl"),
     loopIntervalMs: readNumber("GRID_BOT_LOOP_INTERVAL_MS", DEFAULT_LOOP_INTERVAL_MS),
+    safetyCheckIntervalMs: readNumber("GRID_BOT_SAFETY_CHECK_INTERVAL_MS", DEFAULT_SAFETY_CHECK_INTERVAL_MS),
     farmingLoopIntervalMs: readNumber("GRID_BOT_FARMING_LOOP_INTERVAL_MS", 300_000),
     maxLoops: readOptionalPositiveInt("GRID_BOT_MAX_LOOPS"),
     totalCapitalKrw,

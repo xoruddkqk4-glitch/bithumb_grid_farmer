@@ -130,6 +130,14 @@ export class GridEngine {
     return {
       state: {
         ...nextState,
+        phase: "GRID",
+        gridEntryPrice: null,
+        gridEntryReferencePrice: null,
+        gridEntryNValue: null,
+        gridEntryNCalculatedForKstDate: null,
+        gridInvestmentKrw: 0,
+        layers: [],
+        highestPrice: 0,
         gridResetRequestedAt: null,
         gridResetCompletedAt: new Date().toISOString(),
         gridResetLastError: null,

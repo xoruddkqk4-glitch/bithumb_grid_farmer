@@ -125,11 +125,19 @@ const DEFAULT_TP1_SELL_RATIO = 0.33;
 const DEFAULT_TP2_RETURN_PCT = 0.2;
 const DEFAULT_TP2_SELL_RATIO = 0.33;
 const BITHUMB_LIVE_TEST_ORDER_KRW = 10_000;
+const DEFAULT_TELEGRAM_GRID_BUY_NOTIFICATION_MODE = "batch";
+const DEFAULT_TELEGRAM_GRID_SELL_NOTIFICATION_MODE = "immediate";
+const DEFAULT_TELEGRAM_GRID_BATCH_SIZE = 10;
+
+type TelegramGridNotificationMode = "off" | "immediate" | "batch";
 
 interface TelegramSettings {
   enabled: boolean;
   botToken?: string;
   chatId?: string;
+  gridBuyNotificationMode?: TelegramGridNotificationMode;
+  gridSellNotificationMode?: TelegramGridNotificationMode;
+  gridBatchSize?: number;
   updatedAt: string;
 }
 
@@ -259,6 +267,9 @@ async function buildSummary(): Promise<DashboardSummary> {
 }
 
 function countLayers(layers: GridLayer[], status: GridLayer["status"]): number {
+  if (status === "OPEN") {
+    return layers.filter((layer) => layer.status === "OPEN" && layer.qty > 0).length;
+  }
   return layers.filter((layer) => layer.status === status).length;
 }
 
@@ -358,12 +369,29 @@ function calculatePnlPct(realizedPnlKrw: number, costBasisKrw: number): number |
   return costBasisKrw > 0 ? (realizedPnlKrw / costBasisKrw) * 100 : null;
 }
 
+function calculateTradeRealizedPnlPct(trade: TradeLogRecord): number | null {
+  if (!isRealizedSellAction(trade.action) || trade.realizedPnlKrw == null) {
+    return null;
+  }
+  const proceedsKrw = trade.amountKrw ?? 0;
+  const feeKrw = trade.feeKrw ?? 0;
+  const costBasisKrw = Math.max(0, proceedsKrw - feeKrw - trade.realizedPnlKrw);
+  return calculatePnlPct(trade.realizedPnlKrw, costBasisKrw);
+}
+
+function calculateGridLayerCostBasisKrw(layer: GridLayer): number {
+  if (layer.qty > 0 && layer.buyPrice > 0) {
+    return layer.buyPrice * layer.qty;
+  }
+  return layer.amountKrw;
+}
+
 function calculateHoldingSummary(
   layers: GridLayer[],
   lastPrice: number | null,
 ): { costKrw: number; valueKrw: number; pnlKrw: number; pnlPct: number | null } {
   const openLayers = layers.filter((layer) => layer.status === "OPEN" && layer.qty > 0);
-  const costKrw = openLayers.reduce((sum, layer) => sum + layer.amountKrw, 0);
+  const costKrw = openLayers.reduce((sum, layer) => sum + calculateGridLayerCostBasisKrw(layer), 0);
   const valueKrw = lastPrice == null ? 0 : openLayers.reduce((sum, layer) => sum + layer.qty * lastPrice, 0);
   const pnlKrw = valueKrw - costKrw;
   return {
@@ -1037,18 +1065,49 @@ async function updateGridSettings(body: string): Promise<{
 }
 
 async function readTelegramSettings(): Promise<TelegramSettings> {
-  return (await readJsonFile<TelegramSettings>(telegramSettingsPath)) ?? {
+  const settings = (await readJsonFile<TelegramSettings>(telegramSettingsPath)) ?? {
     enabled: true,
     botToken: process.env.TELEGRAM_BOT_TOKEN || "",
     chatId: process.env.TELEGRAM_CHAT_ID || "",
     updatedAt: new Date().toISOString(),
   };
+  return {
+    ...settings,
+    enabled: settings.enabled !== false,
+    gridBuyNotificationMode: normalizeTelegramGridNotificationMode(
+      settings.gridBuyNotificationMode,
+      DEFAULT_TELEGRAM_GRID_BUY_NOTIFICATION_MODE,
+    ),
+    gridSellNotificationMode: normalizeTelegramGridNotificationMode(
+      settings.gridSellNotificationMode,
+      DEFAULT_TELEGRAM_GRID_SELL_NOTIFICATION_MODE,
+    ),
+    gridBatchSize: normalizeTelegramGridBatchSize(settings.gridBatchSize),
+  };
+}
+
+function normalizeTelegramGridNotificationMode(
+  value: unknown,
+  fallback: TelegramGridNotificationMode,
+): TelegramGridNotificationMode {
+  return value === "off" || value === "immediate" || value === "batch" ? value : fallback;
+}
+
+function normalizeTelegramGridBatchSize(value: unknown): number {
+  const numberValue = Number(value);
+  if (!Number.isInteger(numberValue) || numberValue < 1 || numberValue > 100) {
+    return DEFAULT_TELEGRAM_GRID_BATCH_SIZE;
+  }
+  return numberValue;
 }
 
 async function readTelegramSettingsForClient(): Promise<{
   enabled: boolean;
   botTokenConfigured: boolean;
   chatIdConfigured: boolean;
+  gridBuyNotificationMode: TelegramGridNotificationMode;
+  gridSellNotificationMode: TelegramGridNotificationMode;
+  gridBatchSize: number;
   updatedAt: string;
 }> {
   const settings = await readTelegramSettings();
@@ -1056,6 +1115,11 @@ async function readTelegramSettingsForClient(): Promise<{
     enabled: settings.enabled,
     botTokenConfigured: (settings.botToken || process.env.TELEGRAM_BOT_TOKEN || "").length > 0,
     chatIdConfigured: (settings.chatId || process.env.TELEGRAM_CHAT_ID || "").length > 0,
+    gridBuyNotificationMode:
+      settings.gridBuyNotificationMode ?? DEFAULT_TELEGRAM_GRID_BUY_NOTIFICATION_MODE,
+    gridSellNotificationMode:
+      settings.gridSellNotificationMode ?? DEFAULT_TELEGRAM_GRID_SELL_NOTIFICATION_MODE,
+    gridBatchSize: settings.gridBatchSize ?? DEFAULT_TELEGRAM_GRID_BATCH_SIZE,
     updatedAt: settings.updatedAt,
   };
 }
@@ -1065,8 +1129,18 @@ async function updateTelegramSettings(body: string): Promise<{
   enabled: boolean;
   botTokenConfigured: boolean;
   chatIdConfigured: boolean;
+  gridBuyNotificationMode: TelegramGridNotificationMode;
+  gridSellNotificationMode: TelegramGridNotificationMode;
+  gridBatchSize: number;
 }> {
-  const parsed = JSON.parse(body) as { enabled?: unknown; botToken?: unknown; chatId?: unknown };
+  const parsed = JSON.parse(body) as {
+    enabled?: unknown;
+    botToken?: unknown;
+    chatId?: unknown;
+    gridBuyNotificationMode?: unknown;
+    gridSellNotificationMode?: unknown;
+    gridBatchSize?: unknown;
+  };
   const current = await readTelegramSettings();
   if (parsed.enabled != null && typeof parsed.enabled !== "boolean") {
     throw new Error("텔레그램 사용 여부 값이 올바르지 않습니다.");
@@ -1077,6 +1151,29 @@ async function updateTelegramSettings(body: string): Promise<{
   if (parsed.chatId != null && typeof parsed.chatId !== "string") {
     throw new Error("텔레그램 채팅 ID는 문자열이어야 합니다.");
   }
+  if (
+    parsed.gridBuyNotificationMode != null &&
+    parsed.gridBuyNotificationMode !== "off" &&
+    parsed.gridBuyNotificationMode !== "immediate" &&
+    parsed.gridBuyNotificationMode !== "batch"
+  ) {
+    throw new Error("그리드 매수 알림 방식이 올바르지 않습니다.");
+  }
+  if (
+    parsed.gridSellNotificationMode != null &&
+    parsed.gridSellNotificationMode !== "off" &&
+    parsed.gridSellNotificationMode !== "immediate" &&
+    parsed.gridSellNotificationMode !== "batch"
+  ) {
+    throw new Error("그리드 매도 알림 방식이 올바르지 않습니다.");
+  }
+  const parsedGridBatchSize =
+    parsed.gridBatchSize == null
+      ? normalizeTelegramGridBatchSize(current.gridBatchSize)
+      : Number(parsed.gridBatchSize);
+  if (!Number.isInteger(parsedGridBatchSize) || parsedGridBatchSize < 1 || parsedGridBatchSize > 100) {
+    throw new Error("그리드 알림 묶음 기준은 1~100 사이의 정수여야 합니다.");
+  }
   const nextBotToken = typeof parsed.botToken === "string" && parsed.botToken.trim().length > 0
     ? parsed.botToken.trim()
     : current.botToken;
@@ -1085,6 +1182,15 @@ async function updateTelegramSettings(body: string): Promise<{
     : current.chatId;
   const settings: TelegramSettings = {
     enabled: parsed.enabled ?? current.enabled,
+    gridBuyNotificationMode: normalizeTelegramGridNotificationMode(
+      parsed.gridBuyNotificationMode ?? current.gridBuyNotificationMode,
+      DEFAULT_TELEGRAM_GRID_BUY_NOTIFICATION_MODE,
+    ),
+    gridSellNotificationMode: normalizeTelegramGridNotificationMode(
+      parsed.gridSellNotificationMode ?? current.gridSellNotificationMode,
+      DEFAULT_TELEGRAM_GRID_SELL_NOTIFICATION_MODE,
+    ),
+    gridBatchSize: parsedGridBatchSize ?? DEFAULT_TELEGRAM_GRID_BATCH_SIZE,
     updatedAt: new Date().toISOString(),
   };
   if (nextBotToken != null) settings.botToken = nextBotToken;
@@ -1095,6 +1201,11 @@ async function updateTelegramSettings(body: string): Promise<{
     enabled: settings.enabled,
     botTokenConfigured: (settings.botToken || process.env.TELEGRAM_BOT_TOKEN || "").length > 0,
     chatIdConfigured: (settings.chatId || process.env.TELEGRAM_CHAT_ID || "").length > 0,
+    gridBuyNotificationMode:
+      settings.gridBuyNotificationMode ?? DEFAULT_TELEGRAM_GRID_BUY_NOTIFICATION_MODE,
+    gridSellNotificationMode:
+      settings.gridSellNotificationMode ?? DEFAULT_TELEGRAM_GRID_SELL_NOTIFICATION_MODE,
+    gridBatchSize: settings.gridBatchSize ?? DEFAULT_TELEGRAM_GRID_BATCH_SIZE,
   };
 }
 
@@ -1426,6 +1537,13 @@ async function requestGridReset(): Promise<{
     await writeJsonAtomic(statePath, {
       ...state,
       phase: "GRID",
+      gridEntryPrice: null,
+      gridEntryReferencePrice: null,
+      gridEntryNValue: null,
+      gridEntryNCalculatedForKstDate: null,
+      gridInvestmentKrw: 0,
+      layers: [],
+      highestPrice: 0,
       gridResetRequestedAt: null,
       gridResetCompletedAt: new Date().toISOString(),
       gridResetLastError: null,
@@ -1521,6 +1639,13 @@ async function requestGridReset(): Promise<{
   nextState = {
     ...nextState,
     phase: "GRID",
+    gridEntryPrice: null,
+    gridEntryReferencePrice: null,
+    gridEntryNValue: null,
+    gridEntryNCalculatedForKstDate: null,
+    gridInvestmentKrw: 0,
+    layers: [],
+    highestPrice: 0,
     gridResetRequestedAt: null,
     gridResetCompletedAt: completedAt,
     gridResetLastError: null,
@@ -1565,6 +1690,14 @@ function renderHtml(summary: DashboardSummary, options: ViewOptions): string {
   const gridLevelCount = layers.length || 20;
   const gridLevelSettings = getGridLevelSettings(state, gridLevelCount, currentGapPct ?? 0.01);
   const gridLevelSettingsJson = escapeHtml(JSON.stringify(gridLevelSettings));
+  const firstGridLevelSetting = gridLevelSettings[0] ?? null;
+  const formatRatioPct = (value: number | null | undefined): string =>
+    value == null || !Number.isFinite(value) ? "-" : `${(value * 100).toFixed(2)}%`;
+  const formatTrailingPct = (value: number | null | undefined): string => {
+    if (value == null || !Number.isFinite(value)) return "-";
+    const pct = Math.abs(value * 100);
+    return pct === 0 ? "0.00%" : `-${pct.toFixed(2)}%`;
+  };
   const maxFarmerStages = state?.maxFarmerStages ?? 3;
   const farmerEntryPct = state?.farmerEntryPct ?? DEFAULT_FARMER_ENTRY_PCT;
   const farmerMax3dDrawdownPct = state?.farmerMax3dDrawdownPct ?? DEFAULT_FARMER_MAX_3D_DRAWDOWN_PCT;
@@ -1585,7 +1718,7 @@ function renderHtml(summary: DashboardSummary, options: ViewOptions): string {
   const farmerUseVolatilityExplosionFilter =
     state?.farmerUseVolatilityExplosionFilter ?? DEFAULT_FARMER_USE_VOLATILITY_EXPLOSION_FILTER;
   const gridLoopIntervalMs = state?.gridLoopIntervalMs ?? DEFAULT_LOOP_INTERVAL_MS;
-  const gridLoopIntervalSeconds = Math.round(gridLoopIntervalMs / 1000);
+  const gridLoopIntervalSeconds = Math.max(60, Math.round(gridLoopIntervalMs / 1000));
   const farmingLoopIntervalMs = state?.farmingLoopIntervalMs ?? DEFAULT_FARMING_LOOP_INTERVAL_MS;
   const farmingLoopIntervalSeconds = Math.round(farmingLoopIntervalMs / 1000);
   const enableRecoveryTurtleSell = state?.enableRecoveryTurtleSell ?? false;
@@ -1663,11 +1796,15 @@ function renderHtml(summary: DashboardSummary, options: ViewOptions): string {
         )
       : "",
   ].filter(Boolean).join("");
+  const gridConditionCards = `
+        <div class="panel"><div class="metric-label">그리드 차수</div><div class="metric-value">${gridLevelCount}</div></div>
+        <div class="panel"><div class="metric-label">차수 간격</div><div class="metric-value">${formatRatioPct(currentGapPct)}</div></div>
+        <div class="panel"><div class="metric-label">차수별 매입 금액</div><div class="metric-value">${formatKrw(state?.gridOrderAmountKrw)}</div></div>
+        <div class="panel"><div class="metric-label">매도 익절 기준</div><div class="metric-value">${formatRatioPct(firstGridLevelSetting?.takeProfitPct)}</div></div>
+        <div class="panel"><div class="metric-label">트레일링 폴링 기준</div><div class="metric-value">${formatTrailingPct(firstGridLevelSetting?.trailingPullbackPct)}</div></div>`;
   const strategyFixedSummary = strategyToggleGroup(
     "그리드 매매 조건",
-    `
-        <div class="panel"><div class="metric-label">그리드 차수 간격(%)</div><div class="metric-value">${currentGapPct == null ? "-" : `${(currentGapPct * 100).toFixed(2)}%`}</div></div>
-        <div class="panel"><div class="metric-label">차수별 매수 금액</div><div class="metric-value">${formatKrw(state?.gridOrderAmountKrw)}</div></div>`,
+    gridConditionCards,
   );
   const strategyToggleGroups = [
     strategyToggleGroup("농부 매수 조건", farmerToggleCards),
@@ -1680,7 +1817,7 @@ function renderHtml(summary: DashboardSummary, options: ViewOptions): string {
     .join("");
   const renderLayerRow = (layer: GridLayer): string => {
     const openPnlKrw = calculateOpenLayerPnlKrw(layer, lastPrice);
-    const openPnlPct = openPnlKrw == null ? null : calculatePnlPct(openPnlKrw, layer.amountKrw);
+    const openPnlPct = openPnlKrw == null ? null : calculatePnlPct(openPnlKrw, calculateGridLayerCostBasisKrw(layer));
     const displayStatus = formatLayerStatusKo(layer.status);
     const statusClass = layer.status === "SOLD" ? "waiting" : layer.status.toLowerCase();
     return `
@@ -1708,7 +1845,7 @@ function renderHtml(summary: DashboardSummary, options: ViewOptions): string {
           <td>${formatKrw(trade.price)}</td>
           <td>${formatKrw(trade.amountKrw)}</td>
           <td>${formatKrw(trade.realizedPnlKrw)}</td>
-          <td>${formatPct(trade.realizedPnlPct)}</td>
+          <td>${formatPct(calculateTradeRealizedPnlPct(trade))}</td>
         </tr>`,
     )
     .join("");
@@ -1838,6 +1975,12 @@ function renderHtml(summary: DashboardSummary, options: ViewOptions): string {
       display: grid;
       grid-template-columns: repeat(4, minmax(0, 1fr));
       gap: 10px;
+    }
+    .grid-condition-cards {
+      grid-template-columns: repeat(5, minmax(0, 1fr));
+    }
+    .grid-settings-summary {
+      grid-column: 1 / -1;
     }
     .strategy-fixed-grid {
       margin-bottom: 12px;
@@ -1985,7 +2128,22 @@ function renderHtml(summary: DashboardSummary, options: ViewOptions): string {
       gap: 8px;
       align-items: center;
     }
-    .telegram-form input {
+    .telegram-routing-form {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 8px;
+      margin-top: 8px;
+    }
+    .telegram-routing-field {
+      display: grid;
+      gap: 4px;
+      color: var(--muted);
+      font-size: 11px;
+      font-weight: 800;
+    }
+    .telegram-form input,
+    .telegram-routing-field input,
+    .telegram-routing-field select {
       width: 100%;
       height: 36px;
       border: 1px solid var(--line);
@@ -2287,6 +2445,32 @@ function renderHtml(summary: DashboardSummary, options: ViewOptions): string {
       display: grid;
       gap: 8px;
     }
+    .grid-level-settings-details {
+      grid-column: 1 / -1;
+    }
+    .grid-level-settings-toggle {
+      cursor: pointer;
+      list-style: none;
+    }
+    .grid-level-settings-toggle::-webkit-details-marker {
+      display: none;
+    }
+    .grid-level-settings-toggle h3::after {
+      content: "열기";
+      margin-left: 8px;
+      padding: 2px 8px;
+      border-radius: 999px;
+      background: #dbe8f5;
+      color: #344153;
+      font-size: 11px;
+      font-weight: 800;
+    }
+    .grid-level-settings-details[open] .grid-level-settings-toggle h3::after {
+      content: "닫기";
+    }
+    .grid-level-settings-details:not([open]) .grid-level-settings {
+      display: none;
+    }
     .grid-level-setting-row {
       display: grid;
       grid-template-columns: 72px repeat(4, minmax(112px, 1fr));
@@ -2425,6 +2609,7 @@ function renderHtml(summary: DashboardSummary, options: ViewOptions): string {
       .settings-form { grid-template-columns: repeat(2, minmax(0, 1fr)); }
       .log-head { grid-template-columns: 1fr; }
       .telegram-form { grid-template-columns: 1fr 1fr; }
+      .telegram-routing-form { grid-template-columns: repeat(3, minmax(0, 1fr)); }
       .bithumb-form { grid-template-columns: 1fr 1fr; }
       .bithumb-test-actions { grid-template-columns: 1fr 1fr; }
       .grid-level-setting-row { grid-template-columns: 60px repeat(2, minmax(0, 1fr)); }
@@ -2439,6 +2624,7 @@ function renderHtml(summary: DashboardSummary, options: ViewOptions): string {
       .strategy-setting-grid { grid-template-columns: 1fr; }
       .settings-form { grid-template-columns: 1fr; }
       .telegram-form { grid-template-columns: 1fr; }
+      .telegram-routing-form { grid-template-columns: 1fr; }
       .bithumb-form { grid-template-columns: 1fr; }
       .bithumb-test-actions { grid-template-columns: 1fr; }
       .grid-level-setting-row { grid-template-columns: 1fr; }
@@ -2469,6 +2655,28 @@ function renderHtml(summary: DashboardSummary, options: ViewOptions): string {
             <button id="telegram-save" class="button secondary" type="button">저장</button>
             <button id="telegram-toggle" class="button secondary" type="button">불러오는 중...</button>
             <button id="telegram-test" class="button" type="button">테스트</button>
+          </div>
+          <div class="telegram-routing-form">
+            <label class="telegram-routing-field" for="telegram-grid-buy-mode">
+              그리드 매수 알림
+              <select id="telegram-grid-buy-mode">
+                <option value="batch">묶음</option>
+                <option value="immediate">즉시</option>
+                <option value="off">끄기</option>
+              </select>
+            </label>
+            <label class="telegram-routing-field" for="telegram-grid-sell-mode">
+              그리드 매도 알림
+              <select id="telegram-grid-sell-mode">
+                <option value="immediate">즉시</option>
+                <option value="batch">묶음</option>
+                <option value="off">끄기</option>
+              </select>
+            </label>
+            <label class="telegram-routing-field" for="telegram-grid-batch-size">
+              묶음 기준
+              <input id="telegram-grid-batch-size" type="number" min="1" max="100" step="1" value="${DEFAULT_TELEGRAM_GRID_BATCH_SIZE}">
+            </label>
           </div>
           <div id="telegram-status" class="form-status">텔레그램 설정은 서버에서 불러옵니다.</div>
         </div>
@@ -2540,7 +2748,7 @@ function renderHtml(summary: DashboardSummary, options: ViewOptions): string {
     <section class="section panel settings-card">
       <h2>전략 설정</h2>
       <div id="strategy-funding-summary" class="funding-preview strategy-funding-summary"></div>
-      <div id="strategy-fixed-summary" class="strategy-setting-grid strategy-fixed-grid">
+      <div id="strategy-fixed-summary" class="strategy-setting-grid strategy-fixed-grid grid-condition-cards">
         ${strategyFixedSummary}
       </div>
       <div id="strategy-toggle-summary" class="strategy-setting-grid">
@@ -2550,6 +2758,9 @@ function renderHtml(summary: DashboardSummary, options: ViewOptions): string {
         <summary><span class="strategy-summary-title">전략 조정</span><button id="grid-settings-submit" class="button strategy-summary-save" type="submit" form="grid-settings-form">저장</button></summary>
         <form id="grid-settings-form" class="settings-form">
           <div class="settings-section"><h3>그리드 매수 설정</h3></div>
+          <div id="grid-settings-summary" class="strategy-setting-grid grid-condition-cards grid-settings-summary">
+            ${gridConditionCards}
+          </div>
           <div class="field">
             <label for="grid-levels">그리드 차수</label>
             <input id="grid-levels" name="gridLevels" type="number" min="1" max="100" step="1" value="${gridLevelCount}">
@@ -2563,11 +2774,13 @@ function renderHtml(summary: DashboardSummary, options: ViewOptions): string {
             <input id="grid-order-amount" name="orderAmountKrw" type="number" min="5000" step="1000" value="${formatNumberInput(state?.gridOrderAmountKrw)}">
           </div>
           <div class="field">
-            <label for="grid-loop-interval">Grid 루프 간격(초)</label>
-            <input id="grid-loop-interval" name="gridLoopIntervalSeconds" type="number" min="1" max="86400" step="1" value="${gridLoopIntervalSeconds}">
+            <label for="grid-loop-interval">Grid 점검 간격(초)</label>
+            <input id="grid-loop-interval" name="gridLoopIntervalSeconds" type="number" min="60" max="86400" step="1" value="${gridLoopIntervalSeconds}">
           </div>
-          <div class="settings-section"><h3>차수별 Grid 설정</h3></div>
-          <div id="grid-level-settings" class="grid-level-settings" data-settings="${gridLevelSettingsJson}"></div>
+          <details class="grid-level-settings-details">
+            <summary class="settings-section grid-level-settings-toggle"><h3>차수별 Grid 설정</h3></summary>
+            <div id="grid-level-settings" class="grid-level-settings" data-settings="${gridLevelSettingsJson}"></div>
+          </details>
           <div class="settings-section"><h3>농부 매수 설정</h3></div>
           <div class="field">
             <label for="farmer-stages">농부 최대 매수 차수</label>
@@ -2790,6 +3003,7 @@ function renderHtml(summary: DashboardSummary, options: ViewOptions): string {
     const fundingPreview = document.getElementById("funding-preview");
     const strategyFundingSummary = document.getElementById("strategy-funding-summary");
     const strategyFixedSummary = document.getElementById("strategy-fixed-summary");
+    const gridSettingsSummary = document.getElementById("grid-settings-summary");
     const strategyToggleSummary = document.getElementById("strategy-toggle-summary");
     const farmerUsePriceReachedInput = document.getElementById("farmer-use-price-reached-filter");
     const farmerUseLongTrendInput = document.getElementById("farmer-use-long-trend-filter");
@@ -2826,6 +3040,9 @@ function renderHtml(summary: DashboardSummary, options: ViewOptions): string {
     const telegramToggle = document.getElementById("telegram-toggle");
     const telegramTest = document.getElementById("telegram-test");
     const telegramStatus = document.getElementById("telegram-status");
+    const telegramGridBuyModeInput = document.getElementById("telegram-grid-buy-mode");
+    const telegramGridSellModeInput = document.getElementById("telegram-grid-sell-mode");
+    const telegramGridBatchSizeInput = document.getElementById("telegram-grid-batch-size");
     const bithumbAccessKeyInput = document.getElementById("bithumb-access-key");
     const bithumbSecretKeyInput = document.getElementById("bithumb-secret-key");
     const bithumbSave = document.getElementById("bithumb-save");
@@ -3094,6 +3311,30 @@ function renderHtml(summary: DashboardSummary, options: ViewOptions): string {
       return Math.round(value).toLocaleString("ko-KR") + " KRW";
     }
 
+    function formatPercentValue(value) {
+      return Number.isFinite(value) ? (value * 100).toFixed(2) + "%" : "-";
+    }
+
+    function formatTrailingPercentValue(value) {
+      if (!Number.isFinite(value)) return "-";
+      const pct = Math.abs(value * 100);
+      return pct === 0 ? "0.00%" : "-" + pct.toFixed(2) + "%";
+    }
+
+    function buildGridConditionCards() {
+      const levelsValue = Number(gridLevelsInput ? gridLevelsInput.value : "0");
+      const gapPctValue = Number(gridGapPctInput ? gridGapPctInput.value : "0") / 100;
+      const orderAmount = Number(orderAmountInput ? orderAmountInput.value : "0");
+      const firstLevelSetting = readGridLevelSettingsFromContainer()[0] || {};
+      return [
+        strategyCard("그리드 차수", Number.isFinite(levelsValue) ? String(Math.floor(levelsValue)) : "-"),
+        strategyCard("차수 간격", formatPercentValue(gapPctValue)),
+        strategyCard("차수별 매입 금액", formatKrw(orderAmount)),
+        strategyCard("매도 익절 기준", formatPercentValue(Number(firstLevelSetting.takeProfitPct))),
+        strategyCard("트레일링 폴링 기준", formatTrailingPercentValue(Number(firstLevelSetting.trailingPullbackPct))),
+      ];
+    }
+
     function renderFundingPreview() {
       if (!orderAmountInput) return;
       const configuredLevels = Number(gridLevelsInput ? gridLevelsInput.value : "20");
@@ -3123,13 +3364,13 @@ function renderHtml(summary: DashboardSummary, options: ViewOptions): string {
     }
 
     function renderStrategyFixedSummary() {
-      if (!strategyFixedSummary) return;
-      const orderAmount = Number(orderAmountInput ? orderAmountInput.value : "0");
-      const gapPct = Number(gridGapPctInput ? gridGapPctInput.value : "0");
-      strategyFixedSummary.innerHTML = strategyGroup("그리드 매매 조건", [
-        '<div class="panel"><div class="metric-label">그리드 차수 간격(%)</div><div class="metric-value">' + (Number.isFinite(gapPct) ? gapPct.toFixed(2) + "%" : "-") + "</div></div>",
-        '<div class="panel"><div class="metric-label">차수별 매수 금액</div><div class="metric-value">' + formatKrw(orderAmount) + "</div></div>",
-      ]);
+      const cards = buildGridConditionCards();
+      if (strategyFixedSummary) {
+        strategyFixedSummary.innerHTML = strategyGroup("그리드 매매 조건", cards);
+      }
+      if (gridSettingsSummary) {
+        gridSettingsSummary.innerHTML = cards.join("");
+      }
     }
 
     function isChecked(input) {
@@ -3407,8 +3648,13 @@ function renderHtml(summary: DashboardSummary, options: ViewOptions): string {
         telegramChatIdInput.value = "";
         telegramTokenInput.placeholder = result.botTokenConfigured ? "봇 토큰 저장됨" : "봇 토큰";
         telegramChatIdInput.placeholder = result.chatIdConfigured ? "채팅 ID 저장됨" : "채팅 ID";
+        telegramGridBuyModeInput.value = result.gridBuyNotificationMode || "batch";
+        telegramGridSellModeInput.value = result.gridSellNotificationMode || "immediate";
+        telegramGridBatchSizeInput.value = String(result.gridBatchSize || 10);
         renderTelegramToggle();
-        telegramStatus.textContent = telegramEnabled ? "텔레그램 메시지가 켜져 있습니다." : "텔레그램 메시지가 꺼져 있습니다.";
+        telegramStatus.textContent = telegramEnabled
+          ? "텔레그램 메시지가 켜져 있습니다. 추천 설정: 매수 묶음 / 매도 즉시."
+          : "텔레그램 메시지가 꺼져 있습니다.";
       } catch (error) {
         telegramToggle.textContent = "텔레그램";
         telegramStatus.textContent = error instanceof Error ? error.message : String(error);
@@ -3425,6 +3671,9 @@ function renderHtml(summary: DashboardSummary, options: ViewOptions): string {
           body: JSON.stringify({
             botToken: telegramTokenInput.value,
             chatId: telegramChatIdInput.value,
+            gridBuyNotificationMode: telegramGridBuyModeInput.value,
+            gridSellNotificationMode: telegramGridSellModeInput.value,
+            gridBatchSize: Number(telegramGridBatchSizeInput.value),
           }),
         });
         const result = await response.json();
@@ -3433,7 +3682,10 @@ function renderHtml(summary: DashboardSummary, options: ViewOptions): string {
         telegramTokenInput.placeholder = result.botTokenConfigured ? "봇 토큰 저장됨" : "봇 토큰";
         telegramChatIdInput.value = "";
         telegramChatIdInput.placeholder = result.chatIdConfigured ? "채팅 ID 저장됨" : "채팅 ID";
-        telegramStatus.textContent = "텔레그램 인증 정보를 저장했습니다.";
+        telegramGridBuyModeInput.value = result.gridBuyNotificationMode || telegramGridBuyModeInput.value;
+        telegramGridSellModeInput.value = result.gridSellNotificationMode || telegramGridSellModeInput.value;
+        telegramGridBatchSizeInput.value = String(result.gridBatchSize || telegramGridBatchSizeInput.value || 10);
+        telegramStatus.textContent = "텔레그램 설정을 저장했습니다.";
       } catch (error) {
         telegramStatus.textContent = error instanceof Error ? error.message : String(error);
       } finally {
@@ -3775,7 +4027,7 @@ function calculateOpenLayerPnlKrw(layer: GridLayer, lastPrice: number | null): n
   if (lastPrice == null || layer.status !== "OPEN" || layer.qty <= 0) {
     return null;
   }
-  return Math.round(lastPrice * layer.qty - layer.amountKrw);
+  return Math.round(lastPrice * layer.qty - calculateGridLayerCostBasisKrw(layer));
 }
 
 function getNextGridEntry(layers: GridLayer[]): number | null {
@@ -4044,7 +4296,7 @@ function renderDayTrades(trades: TradeLogRecord[], date: string): string {
           <td>${formatKrw(trade.price)}</td>
           <td>${formatKrw(trade.amountKrw)}</td>
           <td>${formatKrw(trade.realizedPnlKrw)}</td>
-          <td>${formatPct(trade.realizedPnlPct)}</td>
+          <td>${formatPct(calculateTradeRealizedPnlPct(trade))}</td>
         </tr>`,
     )
     .join("");
@@ -4079,7 +4331,7 @@ function renderPeriodTrades(trades: TradeLogRecord[], mode: "month" | "year", va
           <td>${formatKrw(trade.price)}</td>
           <td>${formatKrw(trade.amountKrw)}</td>
           <td>${formatKrw(trade.realizedPnlKrw)}</td>
-          <td>${formatPct(trade.realizedPnlPct)}</td>
+          <td>${formatPct(calculateTradeRealizedPnlPct(trade))}</td>
         </tr>`,
     )
     .join("");

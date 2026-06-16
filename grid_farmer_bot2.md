@@ -81,6 +81,39 @@ Dashboard Farmer Signal:
 
 > 📌 **개정 이력:** 자금 검증 결과 그리드 비율을 17.2% → **15.8%**로 하향(농부 3차까지 자금 닫힘 보장), 농부 3차 베팅 규칙을 "올인" → **"당시 평가금 2배(평가금만큼 추가 투입)"**로 통일, 매도 게이트를 **순손익/계좌 손익 기준**으로 보강, **무손절 추세추종 원칙** 명문화, 사이클 상태머신·5분 쿨다운·dust 처리·기간별 엑셀/대시보드 반영. v3에서는 **레이어 분리 청산**, **GRID 단계 그리드 재매수 허용 / FARMING 이후 재매수 금지**, **농부 KRW 거래대금 필터**, **농부 1~2차 4시간봉 부분 조기 진입**을 반영했습니다. v4 보완안에서는 농부 매수의 구조적 하락장 방어를 위해 **MA200 장기 추세 필터**, **하락 속도/변동성 폭발 필터**, **차수 간 쿨다운**, **잔여 현금 방어력 등급**, **거래대금 절대 하한**을 추가하고, 터틀 매도는 **농부 레이어 손익 게이트**, **실시간 호가 깊이 기반 분할 청산**, **대시보드 조정식 부분 익절 옵션**으로 보강합니다. (상세 설계: `docs/02-design/features/grid_farmer_bot_design.md`)
 
+### 0.2. 최신 운영 반영 사항 (2026-06-16)
+
+현재 TypeScript 구현 기준으로 운영에 반영된 최신 사항은 아래와 같습니다. 이 섹션은 위 설계 메모와 아래 장문의 전략 문서보다 최신 코드 동작을 우선 설명합니다.
+
+```text
+Price / Loop:
+  - 현재가는 Bithumb WebSocket ticker를 기본으로 사용
+  - 조건 판단은 WebSocket 가격 이벤트가 들어올 때 즉시 실행
+  - REST 현재가 조회는 WebSocket 최초 수신 실패, stale fallback 등 필요한 경우에만 사용
+  - 주문, 잔고, 체결 확인은 REST private/public API를 사용
+  - 가격 이벤트가 없을 때는 GRID_BOT_SAFETY_CHECK_INTERVAL_MS=60000 기준으로 1분 안전 점검
+  - 정상 로그 예: wake=price source=BITHUMB_WS nextWaitMs=60000
+
+Grid reset:
+  - 그리드 전체 리셋 후 layers를 비워 대시보드 레이어 상태가 0 / 0에서 시작
+  - gridEntryPrice, gridEntryReferencePrice, gridEntryNValue, gridInvestmentKrw도 초기화
+  - 기존 OPEN 상태라도 qty <= 0이면 보유 포지션으로 집계하지 않음
+
+Grid dashboard:
+  - 그리드 매매 조건/그리드 매수 설정에 5개 카드 표시
+    그리드 차수, 차수 간격, 차수별 매입 금액, 매도 익절 기준, 트레일링 폴링 기준
+  - 차수별 Grid 설정은 제목 클릭으로 접기/펼치기
+  - Grid 점검 간격은 최소 60초
+
+PNL:
+  - OPEN Grid 미실현 손익/수익률은 buyPrice * qty 원가 기준으로 계산
+  - 화면의 실현 수익률은 저장된 realizedPnlPct를 그대로 쓰지 않고 KRW 손익/원가로 재계산
+
+Telegram:
+  - 대시보드에서 그리드 매수/매도 알림 방식을 설정
+  - 추천 기본값: 매수=batch, 매도=immediate, gridBatchSize=10
+```
+
 ---
 
 ## 1. 개요 및 배경

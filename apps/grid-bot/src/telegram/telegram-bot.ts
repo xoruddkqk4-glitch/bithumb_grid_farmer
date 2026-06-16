@@ -36,7 +36,15 @@ interface TelegramSettings {
   enabled?: boolean;
   botToken?: string;
   chatId?: string;
+  gridBuyNotificationMode?: TelegramGridNotificationMode;
+  gridSellNotificationMode?: TelegramGridNotificationMode;
+  gridBatchSize?: number;
 }
+
+type TelegramGridNotificationMode = "off" | "immediate" | "batch";
+
+const DEFAULT_GRID_BUY_NOTIFICATION_MODE: TelegramGridNotificationMode = "batch";
+const DEFAULT_GRID_SELL_NOTIFICATION_MODE: TelegramGridNotificationMode = "immediate";
 
 const defaultRuntimeState: TelegramRuntimeState = {
   updateOffset: 0,
@@ -376,6 +384,16 @@ async function processTradeLogs(
 ): Promise<TelegramRuntimeState> {
   const result = await readNewLogLines(config.logPath, runtimeState.logOffset);
   const currentState = await readJsonFile<BotState>(config.statePath);
+  const telegramSettings = await readTelegramSettings(config);
+  const gridBuyNotificationMode = normalizeGridNotificationMode(
+    telegramSettings.gridBuyNotificationMode,
+    DEFAULT_GRID_BUY_NOTIFICATION_MODE,
+  );
+  const gridSellNotificationMode = normalizeGridNotificationMode(
+    telegramSettings.gridSellNotificationMode,
+    DEFAULT_GRID_SELL_NOTIFICATION_MODE,
+  );
+  const gridBatchSize = normalizeGridBatchSize(telegramSettings.gridBatchSize, config.gridBatchSize);
   let stages = new Set(runtimeState.gridBatchStages);
   let immediateTradeKeys = new Set(runtimeState.immediateTradeKeys ?? []);
   const batchTrades: TradeLogRecord[] = [];
@@ -393,9 +411,17 @@ async function processTradeLogs(
       continue;
     }
     if ((trade.action === "GRID_BUY" || trade.action === "GRID_SELL") && trade.stage != null) {
+      const notificationMode = trade.action === "GRID_BUY" ? gridBuyNotificationMode : gridSellNotificationMode;
+      if (notificationMode === "off") {
+        continue;
+      }
+      if (notificationMode === "immediate") {
+        await sendMessage(config, renderImmediateTrade(trade));
+        continue;
+      }
       stages.add(trade.stage);
       batchTrades.push(trade);
-      if (stages.size >= config.gridBatchSize) {
+      if (stages.size >= gridBatchSize) {
         await sendMessage(config, renderGridBatch([...stages], batchTrades, await readJsonFile<BotState>(config.statePath)));
         stages = new Set();
       }
@@ -412,7 +438,10 @@ async function processTradeLogs(
   return {
     ...runtimeState,
     logOffset: result.offset,
-    gridBatchStages: [...stages].sort((left, right) => left - right),
+    gridBatchStages:
+      gridBuyNotificationMode === "batch" || gridSellNotificationMode === "batch"
+        ? [...stages].sort((left, right) => left - right)
+        : [],
     immediateTradeKeys: [...immediateTradeKeys].slice(-50),
   };
 }
@@ -740,7 +769,7 @@ async function appendJsonLine(path: string, value: unknown): Promise<void> {
 }
 
 async function sendMessage(config: TelegramConfig, text: string): Promise<void> {
-  const settings = (await readJsonFile<TelegramSettings>(config.telegramSettingsPath)) ?? { enabled: true };
+  const settings = await readTelegramSettings(config);
   if (settings.enabled === false) return;
   const credentials = readTelegramCredentialsFromSettings(config, settings);
   if (credentials == null) return;
@@ -771,8 +800,27 @@ async function telegramApi<T = unknown>(
 }
 
 async function readTelegramCredentials(config: TelegramConfig): Promise<{ token: string; chatId: string } | null> {
-  const settings = (await readJsonFile<TelegramSettings>(config.telegramSettingsPath)) ?? {};
+  const settings = await readTelegramSettings(config);
   return readTelegramCredentialsFromSettings(config, settings);
+}
+
+async function readTelegramSettings(config: TelegramConfig): Promise<TelegramSettings> {
+  return (await readJsonFile<TelegramSettings>(config.telegramSettingsPath)) ?? { enabled: true };
+}
+
+function normalizeGridNotificationMode(
+  value: unknown,
+  fallback: TelegramGridNotificationMode,
+): TelegramGridNotificationMode {
+  return value === "off" || value === "immediate" || value === "batch" ? value : fallback;
+}
+
+function normalizeGridBatchSize(value: unknown, fallback: number): number {
+  const numberValue = Number(value ?? fallback);
+  if (!Number.isInteger(numberValue) || numberValue < 1 || numberValue > 100) {
+    return fallback > 0 ? fallback : 10;
+  }
+  return numberValue;
 }
 
 function readTelegramCredentialsFromSettings(

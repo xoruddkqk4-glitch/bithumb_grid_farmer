@@ -3,7 +3,6 @@ import { dirname } from "node:path";
 import {
   BOT_STATE_SCHEMA_VERSION,
   DEFAULT_FARMER_ENTRY_PCT,
-  DEFAULT_LOOP_INTERVAL_MS,
   STRATEGY_VERSION,
 } from "../../../../packages/shared/src/constants";
 import type { BotState } from "../../../../packages/shared/src/types";
@@ -85,7 +84,7 @@ export function createInitialState(input: CreateInitialStateInput): BotState {
     farmerDefenseStatus: null,
     farmerSignal: null,
     farmerPositions: [],
-    gridLoopIntervalMs: DEFAULT_LOOP_INTERVAL_MS,
+    gridLoopIntervalMs: 60_000,
     farmingLoopIntervalMs: 300_000,
     recoveryExitSignal: null,
     enableRecoveryTurtleSell: false,

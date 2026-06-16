@@ -15,6 +15,8 @@ module.exports = {
         GRID_BOT_ID: "btc-grid-bot",
         GRID_BOT_MARKET: "KRW-BTC",
         GRID_BOT_LOOP_INTERVAL_MS: "3000",
+        GRID_BOT_SAFETY_CHECK_INTERVAL_MS: "60000",
+        GRID_BOT_USE_WEBSOCKET_TICKER: "true",
         GRID_BOT_TOTAL_CAPITAL_KRW: "10000000",
         ENABLE_REAL_ORDERS: "false",
         ENABLE_GRID_BUY: "true",

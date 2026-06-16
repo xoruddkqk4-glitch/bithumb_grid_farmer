@@ -12,6 +12,7 @@ import { BithumbPrivateClient, BithumbPublicClient } from "./bithumb/bithumb-cli
 import { BithumbTickerWebSocketPriceSource } from "./bithumb/ws-ticker-price-source";
 import { sleep } from "./bithumb/rate-limiter";
 import type { BotState } from "../../../packages/shared/src/types";
+import type { PriceQuote } from "./bithumb/bithumb-client";
 
 async function main(): Promise<void> {
   const config = loadConfig();
@@ -74,10 +75,13 @@ async function main(): Promise<void> {
   }
 
   console.log(
-    `[grid-bot] started botId=${config.botId} market=${config.market} realOrders=${config.enableRealOrders} ticker=${priceSource instanceof BithumbTickerWebSocketPriceSource ? "websocket" : "rest"} realOrderMode=${config.useAggressiveLimitOrders ? "aggressive-limit" : "market"}`,
+    `[grid-bot] started botId=${config.botId} market=${config.market} realOrders=${config.enableRealOrders} ticker=${priceSource instanceof BithumbTickerWebSocketPriceSource ? "websocket" : "rest"} trigger=${priceSource instanceof BithumbTickerWebSocketPriceSource ? "price-event" : "loop"} safetyCheckMs=${config.safetyCheckIntervalMs} realOrderMode=${config.useAggressiveLimitOrders ? "aggressive-limit" : "market"}`,
   );
 
   let loops = 0;
+  let nextQuote: PriceQuote | null = null;
+  let lastQuoteTimestamp: string | null = null;
+  let wakeReason: "initial" | "price" | "safety" | "loop" = "initial";
   while (true) {
     loops += 1;
     try {
@@ -87,7 +91,9 @@ async function main(): Promise<void> {
         state = restoredState;
         await stateStore.writeAtomic(state);
       }
-      const quote = await priceSource.getCurrentPrice(config.market);
+      const quote = nextQuote ?? await priceSource.getCurrentPrice(config.market);
+      nextQuote = null;
+      lastQuoteTimestamp = quote.timestamp;
       const safetySwitch = await readSafetySwitch();
 
       if (safetySwitch.paused) {
@@ -99,13 +105,15 @@ async function main(): Promise<void> {
         };
         await stateStore.writeAtomic(state);
         console.log(
-          `[grid-bot] loop=${loops} price=${quote.tradePrice} source=${quote.source} phase=${state.phase} paused=true reason="${safetySwitch.reason}"`,
+          `[grid-bot] loop=${loops} wake=${wakeReason} price=${quote.tradePrice} source=${quote.source} phase=${state.phase} paused=true reason="${safetySwitch.reason}"`,
         );
         if (config.maxLoops != null && loops >= config.maxLoops) {
           console.log(`[grid-bot] stopped after GRID_BOT_MAX_LOOPS=${config.maxLoops}`);
           break;
         }
-        await sleepBeforeNextLoop(stateStore, state, config);
+        const wake = await waitBeforeNextCycle(priceSource, stateStore, config, state, lastQuoteTimestamp);
+        nextQuote = wake.quote;
+        wakeReason = wake.reason;
         continue;
       }
 
@@ -118,13 +126,15 @@ async function main(): Promise<void> {
         };
         await stateStore.writeAtomic(state);
         console.log(
-          `[grid-bot] loop=${loops} price=${quote.tradePrice} source=${quote.source} phase=${state.phase} gridResetPending=true sellPaused=true`,
+          `[grid-bot] loop=${loops} wake=${wakeReason} price=${quote.tradePrice} source=${quote.source} phase=${state.phase} gridResetPending=true sellPaused=true`,
         );
         if (config.maxLoops != null && loops >= config.maxLoops) {
           console.log(`[grid-bot] stopped after GRID_BOT_MAX_LOOPS=${config.maxLoops}`);
           break;
         }
-        await sleepBeforeNextLoop(stateStore, state, config);
+        const wake = await waitBeforeNextCycle(priceSource, stateStore, config, state, lastQuoteTimestamp);
+        nextQuote = wake.quote;
+        wakeReason = wake.reason;
         continue;
       }
 
@@ -133,13 +143,15 @@ async function main(): Promise<void> {
         state = resetResult.state;
         await stateStore.writeAtomic(state);
         console.log(
-          `[grid-bot] loop=${loops} price=${quote.tradePrice} source=${quote.source} phase=${state.phase} gridResetSells=${resetResult.count}`,
+          `[grid-bot] loop=${loops} wake=${wakeReason} price=${quote.tradePrice} source=${quote.source} phase=${state.phase} gridResetSells=${resetResult.count}`,
         );
         if (config.maxLoops != null && loops >= config.maxLoops) {
           console.log(`[grid-bot] stopped after GRID_BOT_MAX_LOOPS=${config.maxLoops}`);
           break;
         }
-        await sleepBeforeNextLoop(stateStore, state, config);
+        const wake = await waitBeforeNextCycle(priceSource, stateStore, config, state, lastQuoteTimestamp);
+        nextQuote = wake.quote;
+        wakeReason = wake.reason;
         continue;
       }
 
@@ -155,10 +167,10 @@ async function main(): Promise<void> {
       });
       state = recoveryExitResult.state;
       await stateStore.writeAtomic(state);
-      const nextLoopIntervalMs = selectLoopIntervalMs(state, config);
+      const nextWaitMs = selectWaitIntervalMs(priceSource, state, config);
 
       console.log(
-        `[grid-bot] loop=${loops} price=${quote.tradePrice} source=${quote.source} phase=${state.phase} buys=${result.summary.buys} sells=${result.summary.sells} farmerSignal=${farmerResult.signaled} farmerBuy=${farmerResult.bought} recoveryExitSignal=${recoveryExitResult.signaled} recoverySell=${recoveryExitResult.sold} nextLoopMs=${nextLoopIntervalMs}`,
+        `[grid-bot] loop=${loops} wake=${wakeReason} price=${quote.tradePrice} source=${quote.source} phase=${state.phase} buys=${result.summary.buys} sells=${result.summary.sells} farmerSignal=${farmerResult.signaled} farmerBuy=${farmerResult.bought} recoveryExitSignal=${recoveryExitResult.signaled} recoverySell=${recoveryExitResult.sold} nextWaitMs=${nextWaitMs}`,
       );
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -191,8 +203,45 @@ async function main(): Promise<void> {
       console.log(`[grid-bot] stopped after GRID_BOT_MAX_LOOPS=${config.maxLoops}`);
       break;
     }
-    await sleepBeforeNextLoop(stateStore, state, config);
+    const wake = await waitBeforeNextCycle(priceSource, stateStore, config, state, lastQuoteTimestamp);
+    nextQuote = wake.quote;
+    wakeReason = wake.reason;
   }
+}
+
+type PriceSource = BithumbPublicClient | BithumbTickerWebSocketPriceSource;
+
+async function waitBeforeNextCycle(
+  priceSource: PriceSource,
+  stateStore: LocalStateStore,
+  config: ReturnType<typeof loadConfig>,
+  state: BotState,
+  lastQuoteTimestamp: string | null,
+): Promise<{ quote: PriceQuote | null; reason: "price" | "safety" | "loop" }> {
+  if (priceSource instanceof BithumbTickerWebSocketPriceSource) {
+    const quote = await priceSource.waitForNextQuote(
+      config.market,
+      selectWaitIntervalMs(priceSource, state, config),
+      lastQuoteTimestamp,
+    );
+    return quote == null
+      ? { quote: null, reason: "safety" }
+      : { quote, reason: "price" };
+  }
+
+  await sleepBeforeNextLoop(stateStore, state, config);
+  return { quote: null, reason: "loop" };
+}
+
+function selectWaitIntervalMs(
+  priceSource: PriceSource,
+  state: BotState,
+  config: ReturnType<typeof loadConfig>,
+): number {
+  if (priceSource instanceof BithumbTickerWebSocketPriceSource) {
+    return Math.max(state.gridLoopIntervalMs ?? config.safetyCheckIntervalMs, config.safetyCheckIntervalMs);
+  }
+  return selectLoopIntervalMs(state, config);
 }
 
 function selectLoopIntervalMs(state: BotState, config: ReturnType<typeof loadConfig>): number {
