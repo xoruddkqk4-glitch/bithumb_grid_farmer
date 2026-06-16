@@ -17,10 +17,15 @@ module.exports = {
         GRID_BOT_LOOP_INTERVAL_MS: "3000",
         GRID_BOT_SAFETY_CHECK_INTERVAL_MS: "60000",
         GRID_BOT_USE_WEBSOCKET_TICKER: "true",
-        GRID_BOT_TOTAL_CAPITAL_KRW: "10000000",
-        ENABLE_REAL_ORDERS: "false",
-        ENABLE_GRID_BUY: "true",
-        ENABLE_GRID_SELL: "true"
+        GRID_BOT_TOTAL_CAPITAL_KRW: process.env.GRID_BOT_TOTAL_CAPITAL_KRW || "10000000",
+        GRID_BOT_MAX_REAL_ORDER_KRW: process.env.GRID_BOT_MAX_REAL_ORDER_KRW || "10000",
+        GRID_BOT_MAX_REAL_TOTAL_CAPITAL_KRW: process.env.GRID_BOT_MAX_REAL_TOTAL_CAPITAL_KRW || "1000000",
+        ENABLE_REAL_ORDERS: process.env.ENABLE_REAL_ORDERS || "false",
+        REAL_ORDERS_CONFIRM: process.env.REAL_ORDERS_CONFIRM || "",
+        ENABLE_GRID_BUY: process.env.ENABLE_GRID_BUY || "true",
+        ENABLE_GRID_SELL: process.env.ENABLE_GRID_SELL || "true",
+        ENABLE_FARMER_CONFIRMED_BUY: process.env.ENABLE_FARMER_CONFIRMED_BUY || "false",
+        ENABLE_RECOVERY_TURTLE_SELL: process.env.ENABLE_RECOVERY_TURTLE_SELL || "false"
       }
     },
     {

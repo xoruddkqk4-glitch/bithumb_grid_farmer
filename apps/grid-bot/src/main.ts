@@ -50,7 +50,7 @@ async function main(): Promise<void> {
     realExecutor,
   });
   const gridEngine = new GridEngine(config, bithumb, executor, logger);
-  const farmerEngine = new FarmerEngine(config, bithumb, paperExecutor, logger);
+  const farmerEngine = new FarmerEngine(config, bithumb, executor, logger);
   const recoveryExitEngine = new RecoveryExitEngine(config, bithumb, executor, logger);
 
   let state = await stateStore.readOrCreate({
