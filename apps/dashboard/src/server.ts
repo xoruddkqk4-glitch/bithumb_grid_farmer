@@ -561,7 +561,7 @@ function getLastGridBuyPrice(state: BotState | null): number | null {
   return lastLayer.buyPrice > 0 ? lastLayer.buyPrice : null;
 }
 
-function getFarmerLastBuyPrice(state: BotState | null): number | null {
+function getFarmerBasePrice(state: BotState | null): number | null {
   if (state == null) return null;
   if (state.farmerStage === 0) {
     return state.farmerAnchorPrice ?? getLastGridBuyPrice(state);
@@ -569,10 +569,14 @@ function getFarmerLastBuyPrice(state: BotState | null): number | null {
   return state.farmerAnchorPrice ?? state.farmerLastBuyPrice ?? null;
 }
 
+function getFarmerBasePriceLabel(state: BotState | null): string {
+  return state != null && state.farmerStage > 0 ? "직전 농부 매수가" : "농부 기준 매수가";
+}
+
 function getNextFarmerEntryPrice(state: BotState | null, farmerEntryPct: number): number | null {
   if (state == null) return null;
   if (state.farmerStage >= (state.maxFarmerStages ?? 3)) return null;
-  const lastBuyPrice = getFarmerLastBuyPrice(state);
+  const lastBuyPrice = getFarmerBasePrice(state);
   if (lastBuyPrice == null) return null;
   return lastBuyPrice * (1 - farmerEntryPct);
 }
@@ -1782,7 +1786,8 @@ function renderHtml(summary: DashboardSummary, options: ViewOptions): string {
   const takeProfit2SellRatio = state?.takeProfit2SellRatio ?? DEFAULT_TP2_SELL_RATIO;
   const progressedLevel = getProgressedLevel(layers);
   const waitingLayerCount = summary.totals.waitingLayers + summary.totals.soldLayers;
-  const farmerLastBuyPrice = getFarmerLastBuyPrice(state);
+  const farmerBasePrice = getFarmerBasePrice(state);
+  const farmerBasePriceLabel = getFarmerBasePriceLabel(state);
   const nextFarmerEntryPrice = getNextFarmerEntryPrice(state, farmerEntryPct);
   const recoveryExitSignal = state?.recoveryExitSignal ?? null;
   const recoveryExitStatus = formatRecoveryExitStatusKo(recoveryExitSignal);
@@ -2801,7 +2806,7 @@ function renderHtml(summary: DashboardSummary, options: ViewOptions): string {
       <div class="metric-group-head">농부 상태</div>
       <div class="metric-row">
         <div class="panel"><div class="metric-label">현재가</div><div class="metric-value js-last-price">${formatKrw(state?.lastPrice)}</div></div>
-        <div class="panel"><div class="metric-label">직전 매수가</div><div id="farmer-last-buy-price-value" class="metric-value">${formatKrw(farmerLastBuyPrice)}</div></div>
+        <div class="panel"><div id="farmer-base-price-label" class="metric-label">${escapeHtml(farmerBasePriceLabel)}</div><div id="farmer-last-buy-price-value" class="metric-value">${formatKrw(farmerBasePrice)}</div></div>
         <div class="panel ${enabledToneClass(farmerUsePriceReachedFilter)}"><div class="metric-label">다음 농부 진입가</div><div id="next-farmer-entry-value" class="metric-value">${formatKrw(nextFarmerEntryPrice)}</div><div id="farmer-entry-pct-muted" class="muted">필요 하락률 -${(farmerEntryPct * 100).toFixed(2)}%</div></div>
         <div class="panel"><div class="metric-label">농부 차수</div><div id="farmer-stage-value" class="metric-value">${state?.farmerStage ?? 0} / ${maxFarmerStages}</div></div>
       </div>
@@ -3056,6 +3061,7 @@ function renderHtml(summary: DashboardSummary, options: ViewOptions): string {
       nextGridEntry: "next-grid-entry-value",
       layerStatus: "layer-status-value",
       tradeCount: "trade-count-value",
+      farmerBasePriceLabel: "farmer-base-price-label",
       farmerLastBuyPrice: "farmer-last-buy-price-value",
       nextFarmerEntry: "next-farmer-entry-value",
       farmerEntryPctMuted: "farmer-entry-pct-muted",
@@ -3224,12 +3230,16 @@ function renderHtml(summary: DashboardSummary, options: ViewOptions): string {
       return Number.isFinite(buyPrice) && buyPrice > 0 ? buyPrice : null;
     }
 
-    function getFarmerLastBuyPrice(state) {
+    function getFarmerBasePrice(state) {
       if (!state) return null;
       if (Number(state.farmerStage || 0) === 0) {
         return state.farmerAnchorPrice ?? getLastGridBuyPrice(state);
       }
       return state.farmerAnchorPrice ?? state.farmerLastBuyPrice ?? null;
+    }
+
+    function getFarmerBasePriceLabel(state) {
+      return state && Number(state.farmerStage || 0) > 0 ? "직전 농부 매수가" : "농부 기준 매수가";
     }
 
     function getFarmerEntryPct(state) {
@@ -3243,7 +3253,7 @@ function renderHtml(summary: DashboardSummary, options: ViewOptions): string {
       if (!state) return null;
       const maxFarmerStages = Number.isFinite(Number(state.maxFarmerStages)) ? Number(state.maxFarmerStages) : 3;
       if (Number(state.farmerStage || 0) >= maxFarmerStages) return null;
-      const lastBuyPrice = getFarmerLastBuyPrice(state);
+      const lastBuyPrice = getFarmerBasePrice(state);
       return Number.isFinite(lastBuyPrice) ? lastBuyPrice * (1 - farmerEntryPct) : null;
     }
 
@@ -3293,7 +3303,8 @@ function renderHtml(summary: DashboardSummary, options: ViewOptions): string {
       setMetricText(liveMetricIds.nextGridEntry, formatKrw(getNextGridEntry(state ? state.layers : [])));
       setMetricText(liveMetricIds.layerStatus, waitingLayerCount + " / " + Number(totals.openLayers || 0));
       setMetricText(liveMetricIds.tradeCount, Number(totals.buyCount || 0) + " / " + Number(totals.sellCount || 0));
-      setMetricText(liveMetricIds.farmerLastBuyPrice, formatKrw(getFarmerLastBuyPrice(state)));
+      setMetricText(liveMetricIds.farmerBasePriceLabel, getFarmerBasePriceLabel(state));
+      setMetricText(liveMetricIds.farmerLastBuyPrice, formatKrw(getFarmerBasePrice(state)));
       setMetricText(liveMetricIds.nextFarmerEntry, formatKrw(getNextFarmerEntryPrice(state, farmerEntryPct)));
       setMetricText(liveMetricIds.farmerEntryPctMuted, "필요 하락률 -" + (farmerEntryPct * 100).toFixed(2) + "%");
       setMetricText(liveMetricIds.farmerStage, Number(state && state.farmerStage || 0) + " / " + maxFarmerStages);
