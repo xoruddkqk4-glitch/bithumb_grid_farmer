@@ -6,11 +6,13 @@ import { dirname, resolve } from "node:path";
 import {
   DEFAULT_BITHUMB_FEE_RATE,
   DEFAULT_FARMER_ENTRY_PCT,
+  DEFAULT_GRID_RATIO,
   DEFAULT_LOOP_INTERVAL_MS,
   DEFAULT_MARKET,
 } from "../../../packages/shared/src/constants";
 import {
   buildDefaultGridLevelSettings,
+  calculateGridSizing,
   generateGridLayers,
   normalizeGridLevelSetting,
   roundKrw,
@@ -653,7 +655,7 @@ async function writeTextAtomic(path: string, value: string): Promise<void> {
   await rename(tempPath, path);
 }
 
-function parseGridSettingsBody(body: string): {
+function parseGridSettingsBody(body: string, totalCapitalKrw: number): {
   gapPct: number;
   orderAmountKrw: number;
   gridLevels: number;
@@ -693,7 +695,6 @@ function parseGridSettingsBody(body: string): {
 } {
   const parsed = JSON.parse(body) as {
     gapPct?: unknown;
-    orderAmountKrw?: unknown;
     gridLevels?: unknown;
     gridLevelSettings?: unknown;
     maxFarmerStages?: unknown;
@@ -730,7 +731,6 @@ function parseGridSettingsBody(body: string): {
     takeProfit2SellRatio?: unknown;
   };
   const gapPct = Number(parsed.gapPct);
-  const orderAmountKrw = Number(parsed.orderAmountKrw);
   const gridLevels = Number(parsed.gridLevels);
   const maxFarmerStages = Number(parsed.maxFarmerStages);
   const farmerEntryPct = Number(parsed.farmerEntryPct);
@@ -768,11 +768,16 @@ function parseGridSettingsBody(body: string): {
   if (!Number.isFinite(gapPct) || gapPct < 0.001 || gapPct > 0.2) {
     throw new Error("Gap percent must be between 0.1% and 20%.");
   }
-  if (!Number.isFinite(orderAmountKrw) || orderAmountKrw < 5_000) {
-    throw new Error("Order amount must be at least 5,000 KRW.");
-  }
   if (!Number.isInteger(gridLevels) || gridLevels < 1 || gridLevels > 100) {
     throw new Error("Grid levels must be an integer between 1 and 100.");
+  }
+  const orderAmountKrw = calculateGridSizing({
+    totalCapitalKrw,
+    gridRatio: DEFAULT_GRID_RATIO,
+    levels: gridLevels,
+  }).orderAmountKrw;
+  if (!Number.isFinite(orderAmountKrw) || orderAmountKrw < 5_000) {
+    throw new Error("Calculated order amount must be at least 5,000 KRW. Increase account capital or reduce grid levels.");
   }
   const gridLevelSettings = parseGridLevelSettings(parsed.gridLevelSettings, gridLevels, gapPct);
   if (!Number.isInteger(maxFarmerStages) || maxFarmerStages < 0 || maxFarmerStages > 10) {
@@ -977,11 +982,11 @@ async function updateGridSettings(body: string): Promise<{
   updatedAvailableLayers: number;
   returnedToGrid: boolean;
 }> {
-  const settings = parseGridSettingsBody(body);
   const state = await readJsonFile<BotState>(statePath);
   if (state == null) {
     throw new Error("State file does not exist yet. Start the grid bot first.");
   }
+  const settings = parseGridSettingsBody(body, state.totalCapitalKrw);
 
   const entryPrice = state.gridEntryPrice ?? state.lastPrice;
   if (entryPrice == null || entryPrice <= 0) {
@@ -1691,6 +1696,23 @@ function renderHtml(summary: DashboardSummary, options: ViewOptions): string {
   const gridLevelSettings = getGridLevelSettings(state, gridLevelCount, currentGapPct ?? 0.01);
   const gridLevelSettingsJson = escapeHtml(JSON.stringify(gridLevelSettings));
   const firstGridLevelSetting = gridLevelSettings[0] ?? null;
+  const calculatedGridOrderAmountKrw =
+    state != null
+      ? calculateGridSizing({
+          totalCapitalKrw: state.totalCapitalKrw,
+          gridRatio: DEFAULT_GRID_RATIO,
+          levels: gridLevelCount,
+        }).orderAmountKrw
+      : null;
+  const accountCapitalKrw = state?.accountCapitalKrw ?? state?.totalCapitalKrw ?? null;
+  const accountKrwAvailable = state?.accountKrwBalance ?? null;
+  const accountKrwLocked = state?.accountKrwLocked ?? null;
+  const accountAssetQty =
+    state == null
+      ? null
+      : (state.accountAssetBalance ?? 0) + (state.accountAssetLocked ?? 0);
+  const accountAssetValueKrw = state?.accountAssetValueKrw ?? null;
+  const accountUpdatedAt = state?.accountCapitalUpdatedAt ?? null;
   const formatRatioPct = (value: number | null | undefined): string =>
     value == null || !Number.isFinite(value) ? "-" : `${(value * 100).toFixed(2)}%`;
   const formatTrailingPct = (value: number | null | undefined): string => {
@@ -1799,7 +1821,7 @@ function renderHtml(summary: DashboardSummary, options: ViewOptions): string {
   const gridConditionCards = `
         <div class="panel"><div class="metric-label">그리드 차수</div><div class="metric-value">${gridLevelCount}</div></div>
         <div class="panel"><div class="metric-label">차수 간격</div><div class="metric-value">${formatRatioPct(currentGapPct)}</div></div>
-        <div class="panel"><div class="metric-label">차수별 매입 금액</div><div class="metric-value">${formatKrw(state?.gridOrderAmountKrw)}</div></div>
+        <div class="panel"><div class="metric-label">기본 차수별 매수 금액</div><div class="metric-value">${formatKrw(calculatedGridOrderAmountKrw)}</div></div>
         <div class="panel"><div class="metric-label">매도 익절 기준</div><div class="metric-value">${formatRatioPct(firstGridLevelSetting?.takeProfitPct)}</div></div>
         <div class="panel"><div class="metric-label">트레일링 폴링 기준</div><div class="metric-value">${formatTrailingPct(firstGridLevelSetting?.trailingPullbackPct)}</div></div>`;
   const strategyFixedSummary = strategyToggleGroup(
@@ -2034,6 +2056,18 @@ function renderHtml(summary: DashboardSummary, options: ViewOptions): string {
       border-color: #aeb8c2;
       color: #4d5966;
       cursor: not-allowed;
+    }
+    .readonly-metric {
+      min-height: 40px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      background: #f8fafb;
+      color: var(--text);
+      font-weight: 900;
+      font-size: 16px;
     }
     .checkbox-field {
       min-height: 40px;
@@ -2706,6 +2740,21 @@ function renderHtml(summary: DashboardSummary, options: ViewOptions): string {
       </div>
     </section>
     <section class="metric-group">
+      <div class="metric-group-head">계좌 정보</div>
+      <div class="metric-row">
+        <div class="panel"><div class="metric-label">계좌 평가금액</div><div id="account-capital-value" class="metric-value">${formatKrw(accountCapitalKrw)}</div></div>
+        <div class="panel"><div class="metric-label">주문 가능 KRW</div><div id="account-krw-available-value" class="metric-value">${formatKrw(accountKrwAvailable)}</div></div>
+        <div class="panel"><div class="metric-label">잠김 KRW</div><div id="account-krw-locked-value" class="metric-value">${formatKrw(accountKrwLocked)}</div></div>
+        <div class="panel"><div class="metric-label">BTC 보유 수량</div><div id="account-asset-qty-value" class="metric-value">${accountAssetQty == null ? "-" : `${accountAssetQty.toFixed(8)} BTC`}</div></div>
+      </div>
+      <div class="metric-row metric-row-follow">
+        <div class="panel"><div class="metric-label">BTC 평가금액</div><div id="account-asset-value-value" class="metric-value">${formatKrw(accountAssetValueKrw)}</div></div>
+        <div class="panel"><div class="metric-label">전략 기준 자본</div><div id="account-strategy-capital-value" class="metric-value">${formatKrw(state?.totalCapitalKrw)}</div></div>
+        <div class="panel"><div class="metric-label">기본 차수별 매수 금액</div><div id="account-grid-order-amount-value" class="metric-value">${formatKrw(calculatedGridOrderAmountKrw)}</div></div>
+        <div class="panel"><div class="metric-label">평가 기준 시각</div><div id="account-updated-at-value" class="metric-value">${formatDate(accountUpdatedAt)}</div></div>
+      </div>
+    </section>
+    <section class="metric-group">
       <div class="metric-group-head">실현 손익</div>
       <div class="metric-row">
         <div class="panel ${pnlToneClass(summary.totals.realizedPnlKrw)}"><div class="metric-label">전체 실현 손익</div><div id="realized-pnl-krw-value" class="metric-value">${formatKrw(summary.totals.realizedPnlKrw)}</div></div>
@@ -2770,8 +2819,9 @@ function renderHtml(summary: DashboardSummary, options: ViewOptions): string {
             <input id="grid-gap-pct" name="gapPct" type="number" min="0.1" max="20" step="0.1" value="${currentGapPct == null ? "" : (currentGapPct * 100).toFixed(2)}">
           </div>
           <div class="field">
-            <label for="grid-order-amount">차수별 매수 금액(KRW)</label>
-            <input id="grid-order-amount" name="orderAmountKrw" type="number" min="5000" step="1000" value="${formatNumberInput(state?.gridOrderAmountKrw)}">
+            <label>차수별 매수 금액(KRW)</label>
+            <div id="grid-order-amount" class="readonly-metric" data-value="${calculatedGridOrderAmountKrw ?? ""}">${formatKrw(calculatedGridOrderAmountKrw)}</div>
+            <div class="muted">계좌 평가금액 × 15.8% ÷ 그리드 차수로 자동 계산됩니다.</div>
           </div>
           <div class="field">
             <label for="grid-loop-interval">Grid 점검 간격(초)</label>
@@ -2915,7 +2965,7 @@ function renderHtml(summary: DashboardSummary, options: ViewOptions): string {
           </div>
           <div id="funding-preview" class="funding-preview"></div>
         </form>
-        <div id="grid-settings-status" class="form-status">전략 설정은 저장 즉시 적용됩니다. 차수별 매수 금액은 현재 보유 중이 아닌 레이어에 반영됩니다.</div>
+        <div id="grid-settings-status" class="form-status">전략 설정은 저장 즉시 적용됩니다. 차수별 매수 금액은 계좌 평가금액과 그리드 차수 기준으로 자동 계산됩니다.</div>
         <div class="settings-section"><h3>그리드 전체 리셋</h3></div>
         <div class="field">
           <label>보유 중인 그리드 포지션 전량 매도</label>
@@ -2971,6 +3021,14 @@ function renderHtml(summary: DashboardSummary, options: ViewOptions): string {
       generatedAt: "summary-generated-at",
       market: "market-value",
       lastLoopAt: "last-loop-value",
+      accountCapital: "account-capital-value",
+      accountKrwAvailable: "account-krw-available-value",
+      accountKrwLocked: "account-krw-locked-value",
+      accountAssetQty: "account-asset-qty-value",
+      accountAssetValue: "account-asset-value-value",
+      accountStrategyCapital: "account-strategy-capital-value",
+      accountGridOrderAmount: "account-grid-order-amount-value",
+      accountUpdatedAt: "account-updated-at-value",
       realizedPnlKrw: "realized-pnl-krw-value",
       realizedPnlPct: "realized-pnl-pct-value",
       todayRealizedPnlKrw: "today-realized-pnl-krw-value",
@@ -2994,7 +3052,7 @@ function renderHtml(summary: DashboardSummary, options: ViewOptions): string {
     const gridResetStatus = document.getElementById("grid-reset-status");
     const realizedPnlResetButton = document.getElementById("realized-pnl-reset-button");
     const realizedPnlResetStatus = document.getElementById("realized-pnl-reset-status");
-    const orderAmountInput = document.getElementById("grid-order-amount");
+    const orderAmountDisplay = document.getElementById("grid-order-amount");
     const gridLevelsInput = document.getElementById("grid-levels");
     const gridGapPctInput = document.getElementById("grid-gap-pct");
     const gridLevelSettingsContainer = document.getElementById("grid-level-settings");
@@ -3054,6 +3112,8 @@ function renderHtml(summary: DashboardSummary, options: ViewOptions): string {
     let telegramEnabled = true;
     let bithumbLastLiveTestBuyQty = 0;
     let bithumbLastLiveTestBuyMarket = "";
+    const defaultGridRatio = ${DEFAULT_GRID_RATIO};
+    let strategyTotalCapitalKrw = ${state?.totalCapitalKrw ?? 0};
 
     const tradeModal = document.createElement("div");
     tradeModal.className = "modal-backdrop";
@@ -3185,6 +3245,17 @@ function renderHtml(summary: DashboardSummary, options: ViewOptions): string {
       }
       setMetricText(liveMetricIds.lastLoopAt, formatDate(state ? state.lastLoopAt : null));
       setMetricTextAll(".js-last-price", formatKrw(state ? state.lastPrice : null));
+      strategyTotalCapitalKrw = Number(state && state.totalCapitalKrw || strategyTotalCapitalKrw || 0);
+      const accountAssetQty =
+        state == null ? NaN : Number(state.accountAssetBalance || 0) + Number(state.accountAssetLocked || 0);
+      setMetricText(liveMetricIds.accountCapital, formatKrw(state ? (state.accountCapitalKrw ?? state.totalCapitalKrw) : null));
+      setMetricText(liveMetricIds.accountKrwAvailable, formatKrw(state ? state.accountKrwBalance : null));
+      setMetricText(liveMetricIds.accountKrwLocked, formatKrw(state ? state.accountKrwLocked : null));
+      setMetricText(liveMetricIds.accountAssetQty, formatAssetQty(accountAssetQty));
+      setMetricText(liveMetricIds.accountAssetValue, formatKrw(state ? state.accountAssetValueKrw : null));
+      setMetricText(liveMetricIds.accountStrategyCapital, formatKrw(state ? state.totalCapitalKrw : null));
+      setMetricText(liveMetricIds.accountUpdatedAt, formatDate(state ? state.accountCapitalUpdatedAt : null));
+      renderOrderAmountDisplay();
 
       setMetricText(liveMetricIds.realizedPnlKrw, formatKrw(totals.realizedPnlKrw));
       setMetricText(liveMetricIds.realizedPnlPct, formatPct(totals.realizedPnlPct));
@@ -3311,6 +3382,27 @@ function renderHtml(summary: DashboardSummary, options: ViewOptions): string {
       return Math.round(value).toLocaleString("ko-KR") + " KRW";
     }
 
+    function formatAssetQty(value) {
+      return Number.isFinite(value) ? value.toFixed(8) + " BTC" : "-";
+    }
+
+    function getCalculatedGridOrderAmount() {
+      const configuredLevels = Math.floor(Number(gridLevelsInput ? gridLevelsInput.value : "20"));
+      const levels = Number.isFinite(configuredLevels) && configuredLevels > 0 ? configuredLevels : 20;
+      const totalCapital = Number(strategyTotalCapitalKrw);
+      if (!Number.isFinite(totalCapital) || totalCapital <= 0) return NaN;
+      return Math.round((totalCapital * defaultGridRatio) / levels);
+    }
+
+    function renderOrderAmountDisplay() {
+      const orderAmount = getCalculatedGridOrderAmount();
+      if (orderAmountDisplay) {
+        orderAmountDisplay.dataset.value = Number.isFinite(orderAmount) ? String(orderAmount) : "";
+        orderAmountDisplay.textContent = formatKrw(orderAmount);
+      }
+      setMetricText(liveMetricIds.accountGridOrderAmount, formatKrw(orderAmount));
+    }
+
     function formatPercentValue(value) {
       return Number.isFinite(value) ? (value * 100).toFixed(2) + "%" : "-";
     }
@@ -3324,23 +3416,22 @@ function renderHtml(summary: DashboardSummary, options: ViewOptions): string {
     function buildGridConditionCards() {
       const levelsValue = Number(gridLevelsInput ? gridLevelsInput.value : "0");
       const gapPctValue = Number(gridGapPctInput ? gridGapPctInput.value : "0") / 100;
-      const orderAmount = Number(orderAmountInput ? orderAmountInput.value : "0");
+      const orderAmount = getCalculatedGridOrderAmount();
       const firstLevelSetting = readGridLevelSettingsFromContainer()[0] || {};
       return [
         strategyCard("그리드 차수", Number.isFinite(levelsValue) ? String(Math.floor(levelsValue)) : "-"),
         strategyCard("차수 간격", formatPercentValue(gapPctValue)),
-        strategyCard("차수별 매입 금액", formatKrw(orderAmount)),
+        strategyCard("기본 차수별 매수 금액", formatKrw(orderAmount)),
         strategyCard("매도 익절 기준", formatPercentValue(Number(firstLevelSetting.takeProfitPct))),
         strategyCard("트레일링 폴링 기준", formatTrailingPercentValue(Number(firstLevelSetting.trailingPullbackPct))),
       ];
     }
 
     function renderFundingPreview() {
-      if (!orderAmountInput) return;
       const configuredLevels = Number(gridLevelsInput ? gridLevelsInput.value : "20");
       const levels = configuredLevels;
       const farmerStages = Math.max(0, Math.floor(Number(farmerStagesInput ? farmerStagesInput.value : "3")));
-      const orderAmount = Number(orderAmountInput.value);
+      const orderAmount = getCalculatedGridOrderAmount();
       const levelSettings = readGridLevelSettingsFromContainer();
       const multiplierTotal = levelSettings.length > 0
         ? levelSettings.slice(0, levels).reduce((sum, setting) => sum + Number(setting.buyAmountMultiplier || 0), 0)
@@ -3431,6 +3522,7 @@ function renderHtml(summary: DashboardSummary, options: ViewOptions): string {
     }
 
     function refreshStrategySummaries() {
+      renderOrderAmountDisplay();
       renderFundingPreview();
       renderStrategyFixedSummary();
       renderStrategyToggleSummary();
@@ -3443,13 +3535,10 @@ function renderHtml(summary: DashboardSummary, options: ViewOptions): string {
       window.setTimeout(refreshStrategySummaries, 240);
     }
 
-    if (orderAmountInput) {
-      orderAmountInput.addEventListener("input", renderFundingPreview);
-      orderAmountInput.addEventListener("input", renderStrategyFixedSummary);
-    }
     if (gridLevelsInput) {
       gridLevelsInput.addEventListener("input", renderGridLevelSettingsRows);
       gridLevelsInput.addEventListener("input", renderFundingPreview);
+      gridLevelsInput.addEventListener("input", renderOrderAmountDisplay);
       gridLevelsInput.addEventListener("input", renderStrategyFixedSummary);
     }
     if (gridGapPctInput) {
@@ -3863,7 +3952,6 @@ function renderHtml(summary: DashboardSummary, options: ViewOptions): string {
       const submitButton = gridSettingsSubmitButton || gridSettingsForm.querySelector('button[type="submit"]');
       const formData = new FormData(gridSettingsForm);
       const gapPct = Number(formData.get("gapPct")) / 100;
-      const orderAmountKrw = Number(orderAmountInput.value);
       const gridLevels = Number(formData.get("gridLevels"));
       const gridLevelSettings = readGridLevelSettingsFromContainer();
       const maxFarmerStages = Number(formData.get("maxFarmerStages"));
@@ -3913,7 +4001,6 @@ function renderHtml(summary: DashboardSummary, options: ViewOptions): string {
           headers: { "content-type": "application/json" },
           body: JSON.stringify({
             gapPct,
-            orderAmountKrw,
             gridLevels,
             gridLevelSettings,
             maxFarmerStages,
