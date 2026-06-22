@@ -400,6 +400,7 @@ export class GridEngine {
         };
       }
       if (!sellDecision.shouldSell) continue;
+      const sellLayer = sellDecision.layer;
 
       const requestId = randomUUID();
       const execution = await this.executor.sellMarket({
@@ -444,6 +445,7 @@ export class GridEngine {
         orderId: execution.orderId,
         requestId: execution.requestId,
         reason: quote.source,
+        metadata: buildGridSellMetadata(layer, sellLayer, execution.price),
       });
     }
 
@@ -511,4 +513,45 @@ function evaluateGridSell(layer: GridLayer, currentPrice: number): { layer: Grid
     layer: nextLayer,
     shouldSell: currentPrice <= stopPrice,
   };
+}
+
+function buildGridSellMetadata(
+  originalLayer: GridLayer,
+  sellLayer: GridLayer,
+  executionPrice: number,
+): Record<string, unknown> {
+  const avgBuyPrice = originalLayer.qty > 0 && originalLayer.amountKrw > 0
+    ? originalLayer.amountKrw / originalLayer.qty
+    : originalLayer.buyPrice;
+  const pullbackPct = sellLayer.trailingPullbackPct ?? 0;
+  const trailingHighPrice = sellLayer.trailingHighPrice ?? null;
+  const trailingStopPrice =
+    pullbackPct > 0 && trailingHighPrice != null
+      ? roundKrw(trailingHighPrice * (1 - pullbackPct))
+      : null;
+  const peakPrice =
+    pullbackPct > 0 && trailingHighPrice != null
+      ? trailingHighPrice
+      : Math.max(executionPrice, sellLayer.sellPrice);
+  const peakReturnPct = calculateReturnPct(peakPrice, avgBuyPrice);
+  const exitReturnPct = calculateReturnPct(executionPrice, avgBuyPrice);
+  return {
+    sellReason: pullbackPct > 0 ? "TRAILING_PULLBACK" : "TAKE_PROFIT",
+    avgBuyPrice,
+    targetSellPrice: sellLayer.sellPrice,
+    peakPrice,
+    peakReturnPct,
+    exitReturnPct,
+    returnPullbackPct: peakReturnPct != null && exitReturnPct != null ? peakReturnPct - exitReturnPct : null,
+    trailingPullbackPct: pullbackPct > 0 ? pullbackPct * 100 : null,
+    trailingHighPrice,
+    trailingStopPrice,
+  };
+}
+
+function calculateReturnPct(price: number | null, basePrice: number | null): number | null {
+  if (price == null || basePrice == null || !Number.isFinite(price) || !Number.isFinite(basePrice) || basePrice <= 0) {
+    return null;
+  }
+  return ((price - basePrice) / basePrice) * 100;
 }

@@ -388,6 +388,32 @@ function calculateTradeRealizedPnlPct(trade: TradeLogRecord): number | null {
   return calculatePnlPct(trade.realizedPnlKrw, costBasisKrw);
 }
 
+function formatTradeSellReason(trade: TradeLogRecord): string {
+  if (trade.action !== "GRID_SELL") return "-";
+  const sellReason = readMetadataString(trade.metadata, "sellReason");
+  const peakReturnPct = readMetadataNumber(trade.metadata, "peakReturnPct");
+  const returnPullbackPct = readMetadataNumber(trade.metadata, "returnPullbackPct");
+  const trailingStopPrice = readMetadataNumber(trade.metadata, "trailingStopPrice");
+  if (sellReason === "TRAILING_PULLBACK") {
+    const stop = trailingStopPrice == null ? "" : ` / stop ${formatKrw(trailingStopPrice)}`;
+    return `트레일링 매도: 최고 ${formatPct(peakReturnPct)}, 하락 ${formatPct(returnPullbackPct)}p${stop}`;
+  }
+  if (sellReason === "TAKE_PROFIT") {
+    return `목표익절: 최고 ${formatPct(peakReturnPct)}`;
+  }
+  return trade.reason ?? "-";
+}
+
+function readMetadataString(metadata: Record<string, unknown> | undefined, key: string): string | null {
+  const value = metadata?.[key];
+  return typeof value === "string" && value.length > 0 ? value : null;
+}
+
+function readMetadataNumber(metadata: Record<string, unknown> | undefined, key: string): number | null {
+  const value = metadata?.[key];
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
 function calculateGridLayerCostBasisKrw(layer: GridLayer): number {
   if (layer.qty > 0 && layer.buyPrice > 0) {
     return layer.buyPrice * layer.qty;
@@ -1916,6 +1942,7 @@ function renderHtml(summary: DashboardSummary, options: ViewOptions): string {
           <td>${formatKrw(trade.amountKrw)}</td>
           <td>${formatKrw(trade.realizedPnlKrw)}</td>
           <td>${formatPct(calculateTradeRealizedPnlPct(trade))}</td>
+          <td>${escapeHtml(formatTradeSellReason(trade))}</td>
         </tr>`,
     )
     .join("");
@@ -3044,8 +3071,8 @@ function renderHtml(summary: DashboardSummary, options: ViewOptions): string {
       <h2>최근 실거래 로그 <span class="summary-meta">현재 사이클 ${summary.recentTrades.length}개</span></h2>
       <div class="table-wrap scroll-table">
         <table>
-          <thead><tr><th>시각</th><th>동작</th><th>차수</th><th>가격</th><th>금액</th><th>손익</th><th>수익률</th></tr></thead>
-          <tbody>${tradeRows || `<tr><td colspan="7">현재 사이클의 매수/매도 로그가 없습니다. Grid 리셋 후 새 사이클은 여기서 0부터 표시됩니다.</td></tr>`}</tbody>
+          <thead><tr><th>시각</th><th>동작</th><th>차수</th><th>가격</th><th>금액</th><th>손익</th><th>수익률</th><th>매도 이유</th></tr></thead>
+          <tbody>${tradeRows || `<tr><td colspan="8">현재 사이클의 매수/매도 로그가 없습니다. Grid 리셋 후 새 사이클은 여기서 0부터 표시됩니다.</td></tr>`}</tbody>
         </table>
       </div>
     </section>
@@ -4462,6 +4489,7 @@ function renderDayTrades(trades: TradeLogRecord[], date: string): string {
           <td>${formatKrw(trade.amountKrw)}</td>
           <td>${formatKrw(trade.realizedPnlKrw)}</td>
           <td>${formatPct(calculateTradeRealizedPnlPct(trade))}</td>
+          <td>${escapeHtml(formatTradeSellReason(trade))}</td>
         </tr>`,
     )
     .join("");
@@ -4474,8 +4502,8 @@ function renderDayTrades(trades: TradeLogRecord[], date: string): string {
     <div class="metric-value" style="margin-bottom: 12px;">${formatKrw(totalPnl)} (${formatManwon(totalPnl)} 만원)</div>
     <div class="table-wrap">
       <table>
-        <thead><tr><th>시각</th><th>동작</th><th>차수</th><th>가격</th><th>금액</th><th>손익</th><th>수익률</th></tr></thead>
-        <tbody>${rows || `<tr><td colspan="7">이 날짜의 거래 내역이 없습니다.</td></tr>`}</tbody>
+        <thead><tr><th>시각</th><th>동작</th><th>차수</th><th>가격</th><th>금액</th><th>손익</th><th>수익률</th><th>매도 이유</th></tr></thead>
+        <tbody>${rows || `<tr><td colspan="8">이 날짜의 거래 내역이 없습니다.</td></tr>`}</tbody>
       </table>
     </div>`;
 }
@@ -4497,6 +4525,7 @@ function renderPeriodTrades(trades: TradeLogRecord[], mode: "month" | "year", va
           <td>${formatKrw(trade.amountKrw)}</td>
           <td>${formatKrw(trade.realizedPnlKrw)}</td>
           <td>${formatPct(calculateTradeRealizedPnlPct(trade))}</td>
+          <td>${escapeHtml(formatTradeSellReason(trade))}</td>
         </tr>`,
     )
     .join("");
@@ -4507,8 +4536,8 @@ function renderPeriodTrades(trades: TradeLogRecord[], mode: "month" | "year", va
     <div class="metric-value" style="margin-bottom: 12px;">${formatKrw(totalPnl)} (${formatManwon(totalPnl)} 만원)</div>
     <div class="table-wrap">
       <table>
-        <thead><tr><th>시각</th><th>동작</th><th>차수</th><th>가격</th><th>금액</th><th>손익</th><th>수익률</th></tr></thead>
-        <tbody>${rows || `<tr><td colspan="7">이 기간의 거래 내역이 없습니다.</td></tr>`}</tbody>
+        <thead><tr><th>시각</th><th>동작</th><th>차수</th><th>가격</th><th>금액</th><th>손익</th><th>수익률</th><th>매도 이유</th></tr></thead>
+        <tbody>${rows || `<tr><td colspan="8">이 기간의 거래 내역이 없습니다.</td></tr>`}</tbody>
       </table>
     </div>`;
 }
