@@ -300,17 +300,17 @@ export class BithumbPrivateClient {
     };
     const response = await this.postOrder(body);
     const orderId = readOrderId(response);
-    const order = await this.getOrderOrCancel(orderId, params.waitMs);
+    let order = await this.waitForLimitOrder(orderId, params.waitMs);
     const executedQty = readRequiredExecutedVolume(order, orderId);
     const remainingQty = readOptionalNumericStringField(order, "remaining_volume") ?? 0;
-    if (executedQty <= 0) {
-      await this.cancelOrder(orderId);
+    if (executedQty <= 0 || remainingQty > 0) {
+      order = await this.cancelOrderAndKeepFill(orderId, order);
+    }
+    const finalExecutedQty = readRequiredExecutedVolume(order, orderId);
+    if (finalExecutedQty <= 0) {
       throw new Error(`Bithumb limit buy ${orderId} was not filled.`);
     }
-    if (remainingQty > 0) {
-      await this.cancelOrder(orderId);
-    }
-    const amountKrw = roundKrw(params.price * executedQty);
+    const amountKrw = roundKrw(params.price * finalExecutedQty);
     const feeKrw = readOptionalNumericStringField(order, "paid_fee") ?? roundKrw(amountKrw * this.options.feeRate);
     return {
       orderId,
@@ -318,7 +318,7 @@ export class BithumbPrivateClient {
       market: params.market,
       side: "BUY",
       price: params.price,
-      qty: executedQty,
+      qty: finalExecutedQty,
       amountKrw,
       feeKrw,
       executedAt: readOptionalStringField(response, "created_at") ?? new Date().toISOString(),
@@ -373,17 +373,17 @@ export class BithumbPrivateClient {
     };
     const response = await this.postOrder(body);
     const orderId = readOrderId(response);
-    const order = await this.getOrderOrCancel(orderId, params.waitMs);
+    let order = await this.waitForLimitOrder(orderId, params.waitMs);
     const qty = readRequiredExecutedVolume(order, orderId);
     const remainingQty = readOptionalNumericStringField(order, "remaining_volume") ?? 0;
-    if (qty <= 0) {
-      await this.cancelOrder(orderId);
+    if (qty <= 0 || remainingQty > 0) {
+      order = await this.cancelOrderAndKeepFill(orderId, order);
+    }
+    const finalQty = readRequiredExecutedVolume(order, orderId);
+    if (finalQty <= 0) {
       throw new Error(`Bithumb limit sell ${orderId} was not filled.`);
     }
-    if (remainingQty > 0) {
-      await this.cancelOrder(orderId);
-    }
-    const amountKrw = roundKrw(params.price * qty);
+    const amountKrw = roundKrw(params.price * finalQty);
     const feeKrw = readOptionalNumericStringField(order, "paid_fee") ?? roundKrw(amountKrw * this.options.feeRate);
     return {
       orderId,
@@ -391,7 +391,7 @@ export class BithumbPrivateClient {
       market: params.market,
       side: "SELL",
       price: params.price,
-      qty,
+      qty: finalQty,
       amountKrw,
       feeKrw,
       executedAt: readOptionalStringField(response, "created_at") ?? new Date().toISOString(),
@@ -407,9 +407,19 @@ export class BithumbPrivateClient {
     return asRecord(await this.authenticatedRequest("DELETE", "/v1/order", { uuid }));
   }
 
-  private async getOrderOrCancel(uuid: string, waitMs = 1_000): Promise<Record<string, unknown>> {
+  private async waitForLimitOrder(uuid: string, waitMs = 5_000): Promise<Record<string, unknown>> {
+    const deadline = Date.now() + Math.max(0, waitMs);
+    let order = await this.getOrderOrCancelOnLookupFailure(uuid);
+    while (!isLimitOrderTerminal(order) && Date.now() < deadline) {
+      await sleep(Math.min(500, Math.max(0, deadline - Date.now())));
+      order = await this.getOrderOrCancelOnLookupFailure(uuid);
+    }
+    return order;
+  }
+
+  private async getOrderOrCancelOnLookupFailure(uuid: string): Promise<Record<string, unknown>> {
     try {
-      return await this.tryGetOrder(uuid, waitMs);
+      return await this.getOrder(uuid);
     } catch (error) {
       try {
         await this.cancelOrder(uuid);
@@ -422,7 +432,26 @@ export class BithumbPrivateClient {
 
   private async tryGetOrder(uuid: string, waitMs = 1_000): Promise<Record<string, unknown>> {
     await sleep(waitMs);
+    return await this.getOrder(uuid);
+  }
+
+  private async getOrder(uuid: string): Promise<Record<string, unknown>> {
     return asRecord(await this.authenticatedRequest("GET", "/v1/order", { uuid }));
+  }
+
+  private async cancelOrderAndKeepFill(
+    uuid: string,
+    lastOrder: Record<string, unknown>,
+  ): Promise<Record<string, unknown>> {
+    try {
+      return preferOrderWithHigherExecution(await this.cancelOrder(uuid), lastOrder);
+    } catch {
+      try {
+        return preferOrderWithHigherExecution(await this.getOrder(uuid), lastOrder);
+      } catch {
+        return lastOrder;
+      }
+    }
   }
 
   private async authenticatedRequest(
@@ -534,6 +563,22 @@ function readRequiredExecutedVolume(value: Record<string, unknown>, orderId: str
     throw new Error(`Bithumb order ${orderId} response missing executed_volume.`);
   }
   return executedQty;
+}
+
+function isLimitOrderTerminal(order: Record<string, unknown>): boolean {
+  const remainingQty = readOptionalNumericStringField(order, "remaining_volume");
+  if (remainingQty === 0) return true;
+  const state = readOptionalStringField(order, "state");
+  return state === "done" || state === "cancel" || state === "cancelled";
+}
+
+function preferOrderWithHigherExecution(
+  left: Record<string, unknown>,
+  right: Record<string, unknown>,
+): Record<string, unknown> {
+  const leftExecutedQty = readOptionalNumericStringField(left, "executed_volume") ?? 0;
+  const rightExecutedQty = readOptionalNumericStringField(right, "executed_volume") ?? 0;
+  return leftExecutedQty >= rightExecutedQty ? left : right;
 }
 
 function readOptionalStringField(value: Record<string, unknown>, key: string): string | null {

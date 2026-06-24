@@ -175,7 +175,7 @@ export function loadConfig(): GridBotConfig {
   const maxRealTotalCapitalKrw = readNumber("GRID_BOT_MAX_REAL_TOTAL_CAPITAL_KRW", 1_000_000);
   const useAggressiveLimitOrders = readBool("GRID_BOT_USE_AGGRESSIVE_LIMIT_ORDERS", true);
   const aggressiveLimitOffsetPct = readNumber("GRID_BOT_AGGRESSIVE_LIMIT_OFFSET_PCT", 0.0005);
-  const aggressiveLimitWaitMs = readNumber("GRID_BOT_AGGRESSIVE_LIMIT_WAIT_MS", 1_000);
+  const aggressiveLimitWaitMs = readNumber("GRID_BOT_AGGRESSIVE_LIMIT_WAIT_MS", 5_000);
   if (aggressiveLimitOffsetPct < 0 || aggressiveLimitOffsetPct > 0.05) {
     throw new Error("GRID_BOT_AGGRESSIVE_LIMIT_OFFSET_PCT must be between 0 and 0.05.");
   }

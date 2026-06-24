@@ -1430,7 +1430,7 @@ async function executeBithumbLiveTestOrder(body: string): Promise<{
     maxOrderKrw: side === "SELL" ? BITHUMB_LIVE_TEST_ORDER_KRW * 1.2 : BITHUMB_LIVE_TEST_ORDER_KRW,
     useAggressiveLimitOrders: true,
     aggressiveLimitOffsetPct: 0.0005,
-    aggressiveLimitWaitMs: 1_000,
+    aggressiveLimitWaitMs: 5_000,
   });
   const requestId = randomUUID();
   const execution = side === "BUY"
