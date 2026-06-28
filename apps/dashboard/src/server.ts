@@ -1825,9 +1825,7 @@ function renderHtml(summary: DashboardSummary, options: ViewOptions): string {
   const maxFarmerStages = state?.maxFarmerStages ?? 3;
   const farmerEntryPcts = getFarmerEntryPcts(state, maxFarmerStages);
   const farmerEntryPct = getFarmerEntryPctForStage(state, (state?.farmerStage ?? 0) + 1);
-  const farmerEntryPctSummary = farmerEntryPcts.length > 0
-    ? farmerEntryPcts.map((pct, index) => `${index + 1}차 -${(pct * 100).toFixed(2)}%`).join(" / ")
-    : `-${(farmerEntryPct * 100).toFixed(2)}%`;
+  const farmerEntryPctCardValues = farmerEntryPcts.length > 0 ? farmerEntryPcts : [farmerEntryPct];
   const farmerEntryPctInputsHtml =
     farmerEntryPcts.length > 0
       ? farmerEntryPcts.map((pct, index) => `
@@ -1909,10 +1907,13 @@ function renderHtml(summary: DashboardSummary, options: ViewOptions): string {
       : recoveryTrailingActivationMode === "TP1"
         ? "TP1 이상"
         : "TP2 이상";
+  const farmerEntryCards = farmerEntryPctCardValues
+    .map((pct, index) =>
+      strategyToggleCard(`${index + 1}차 농부 진입`, `-${(pct * 100).toFixed(2)}%`, "목표가 도달 조건"),
+    )
+    .join("");
   const farmerToggleCards = [
-    farmerUsePriceReachedFilter
-      ? strategyToggleCard("농부 진입 가격", farmerEntryPctSummary, "차수별 목표가 도달 조건")
-      : "",
+    farmerUsePriceReachedFilter ? farmerEntryCards : "",
     farmerUseLongTrendFilter ? strategyToggleCard("장기 추세", "MA200", "방향 조건") : "",
     farmerUseTurnoverRatioFilter ? strategyToggleCard("거래대금 증가", "1.50x / 1.20x", "20일 / 5일") : "",
     farmerUseMa5TrendFilter ? strategyToggleCard("MA5 단기 추세", "MA5") : "",
@@ -3359,12 +3360,15 @@ function renderHtml(summary: DashboardSummary, options: ViewOptions): string {
       return Number.isFinite(inputValue) ? inputValue / 100 : 0.1;
     }
 
-    function getFarmerEntryPctSummaryFromInputs() {
-      const values = farmerEntryPctInputs.map((input, index) => {
+    function getFarmerEntryCardsFromInputs() {
+      return farmerEntryPctInputs.map((input, index) => {
         const value = Number(input ? input.value : NaN);
-        return (index + 1) + "차 -" + (Number.isFinite(value) ? value : 0).toFixed(2) + "%";
+        return strategyCard(
+          (index + 1) + "차 농부 진입",
+          "-" + (Number.isFinite(value) ? value : 0).toFixed(2) + "%",
+          "목표가 도달 조건",
+        );
       });
-      return values.length > 0 ? values.join(" / ") : "-";
     }
 
     function getNextFarmerEntryPrice(state, farmerEntryPct) {
@@ -3645,7 +3649,7 @@ function renderHtml(summary: DashboardSummary, options: ViewOptions): string {
 
     function renderStrategyToggleSummary() {
       if (!strategyToggleSummary) return;
-      const farmerEntryPctSummary = getFarmerEntryPctSummaryFromInputs();
+      const farmerEntryCards = getFarmerEntryCardsFromInputs();
       const nMultiplier = numberValue(recoveryTurtleNMultiplierInput, 2);
       const lowBreakoutPeriod = Math.max(0, Math.floor(numberValue(recoveryTurtleLowBreakoutPeriodInput, 20)));
       const sliceOrderKrw = numberValue(recoveryTurtleSliceOrderInput, 0);
@@ -3655,7 +3659,7 @@ function renderHtml(summary: DashboardSummary, options: ViewOptions): string {
       const tp2ReturnPct = numberValue(tp2ReturnInput, 0);
       const tp2SellRatio = numberValue(tp2SellRatioInput, 0);
       const farmerCards = [
-        isChecked(farmerUsePriceReachedInput) ? strategyCard("농부 진입 가격", farmerEntryPctSummary, "차수별 목표가 도달 조건") : "",
+        ...(isChecked(farmerUsePriceReachedInput) ? farmerEntryCards : []),
         isChecked(farmerUseLongTrendInput) ? strategyCard("장기 추세", "MA200", "방향 조건") : "",
         isChecked(farmerUseTurnoverRatioInput) ? strategyCard("거래대금 증가", "1.50x / 1.20x", "20일 / 5일") : "",
         isChecked(farmerUseMa5TrendInput) ? strategyCard("MA5 단기 추세", "MA5") : "",
