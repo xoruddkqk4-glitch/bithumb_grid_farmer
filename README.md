@@ -77,6 +77,7 @@ archive            과거 문서 보관
 - 실제 농부 매수는 `ENABLE_FARMER_CONFIRMED_BUY=true`일 때만 실행됩니다.
 - 농부 매수 전 대시보드의 **농부 기준 매수가**는 마지막 그리드 차수의 매수가입니다.
 - 농부 매수 후에는 **직전 농부 매수가**를 기준으로 다음 농부 진입가를 계산합니다.
+- 농부 진입 하락률은 차수별로 다르게 설정할 수 있습니다. `farmerEntryPcts`가 있으면 다음 농부 차수에 맞는 값을 우선 사용하고, 없으면 기존 `farmerEntryPct`를 사용합니다.
 - 주요 필터는 장기 추세, MA5 추세, 거래대금, 3일 하락률, 변동성 폭발, 양봉 조건, 현금 방어입니다.
 
 ### 3. 회복 터틀
@@ -226,6 +227,7 @@ pm2 restart bithumb-grid-bot-paper --update-env
 | 변수 | 기본값 | 설명 |
 | --- | --- | --- |
 | `ENABLE_FARMER_CONFIRMED_BUY` | `false` | 농부 확정 매수 실행 |
+| `farmerEntryPcts` | `[0.15, 0.15, 0.15]` | `bot_state.json`에 저장되는 농부 차수별 진입 하락률 |
 | `FARMER_LONG_TREND_MODE` | `relaxed` | 장기 추세 필터 모드 |
 | `FARMER_MIN_ORDER_KRW` | `5000` | 농부 최소 주문 금액 |
 | `FARMER_MIN_DEFENSE_CASH_AFTER_BUY_KRW` | `0` | 매수 후 남길 최소 현금 |
@@ -242,6 +244,7 @@ pm2 restart bithumb-grid-bot-paper --update-env
 - 보유 중인 그리드, 대기 중인 그리드, 매도 완료 레이어
 - 최근 실거래 로그와 매도 이유
 - 농부 기준 매수가와 다음 농부 진입가
+- 농부 차수별 진입 하락률 설정과 다음 차수 기준 진입가
 - 일별 손익 달력과 추세
 - PM2 로그 tail
 - 전략 설정과 텔레그램/Bithumb 설정

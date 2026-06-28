@@ -3,6 +3,7 @@ import { dirname } from "node:path";
 import {
   BOT_STATE_SCHEMA_VERSION,
   DEFAULT_FARMER_ENTRY_PCT,
+  DEFAULT_FARMER_ENTRY_PCTS,
   STRATEGY_VERSION,
 } from "../../../../packages/shared/src/constants";
 import type { BotState } from "../../../../packages/shared/src/types";
@@ -76,6 +77,7 @@ export function createInitialState(input: CreateInitialStateInput): BotState {
     layers: [],
     farmerStage: 0,
     farmerEntryPct: DEFAULT_FARMER_ENTRY_PCT,
+    farmerEntryPcts: DEFAULT_FARMER_ENTRY_PCTS,
     farmerMax3dDrawdownPct: -0.25,
     farmerStage2CooldownDays: 3,
     farmerStage3CooldownDays: 5,

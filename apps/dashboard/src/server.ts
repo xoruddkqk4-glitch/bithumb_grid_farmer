@@ -597,11 +597,25 @@ function getFarmerBasePriceLabel(state: BotState | null): string {
   return state != null && state.farmerStage > 0 ? "직전 농부 매수가" : "농부 기준 매수가";
 }
 
-function getNextFarmerEntryPrice(state: BotState | null, farmerEntryPct: number): number | null {
+function getFarmerEntryPctForStage(state: BotState | null, stage: number): number {
+  const stageEntryPct = state?.farmerEntryPcts?.[stage - 1];
+  if (stageEntryPct != null && Number.isFinite(stageEntryPct) && stageEntryPct > 0) {
+    return stageEntryPct;
+  }
+  return state?.farmerEntryPct ?? DEFAULT_FARMER_ENTRY_PCT;
+}
+
+function getFarmerEntryPcts(state: BotState | null, maxFarmerStages: number): number[] {
+  const stageCount = Math.max(0, Math.min(10, Math.floor(maxFarmerStages)));
+  return Array.from({ length: stageCount }, (_, index) => getFarmerEntryPctForStage(state, index + 1));
+}
+
+function getNextFarmerEntryPrice(state: BotState | null): number | null {
   if (state == null) return null;
   if (state.farmerStage >= (state.maxFarmerStages ?? 3)) return null;
   const lastBuyPrice = getFarmerBasePrice(state);
   if (lastBuyPrice == null) return null;
+  const farmerEntryPct = getFarmerEntryPctForStage(state, state.farmerStage + 1);
   return lastBuyPrice * (1 - farmerEntryPct);
 }
 
@@ -687,6 +701,19 @@ async function writeTextAtomic(path: string, value: string): Promise<void> {
   await rename(tempPath, path);
 }
 
+function parseFarmerEntryPcts(value: unknown, maxFarmerStages: number, fallbackPct: number): number[] {
+  const stageCount = Number.isInteger(maxFarmerStages) ? Math.max(0, Math.min(10, maxFarmerStages)) : 0;
+  const rawValues = Array.isArray(value) ? value : [];
+  const fallback = Number.isFinite(fallbackPct) ? fallbackPct : DEFAULT_FARMER_ENTRY_PCT;
+  return Array.from({ length: stageCount }, (_, index) => {
+    const pct = Number(rawValues[index] ?? fallback);
+    if (!Number.isFinite(pct) || pct < 0.01 || pct > 0.9) {
+      throw new Error(`Farmer stage ${index + 1} entry percent must be between 1% and 90%.`);
+    }
+    return pct;
+  });
+}
+
 function parseGridSettingsBody(body: string, totalCapitalKrw: number): {
   gapPct: number;
   orderAmountKrw: number;
@@ -697,6 +724,7 @@ function parseGridSettingsBody(body: string, totalCapitalKrw: number): {
   gridFirstBuyNMultiplier: number;
   maxFarmerStages: number;
   farmerEntryPct: number;
+  farmerEntryPcts: number[];
   farmerMax3dDrawdownPct: number;
   farmerStage2CooldownDays: number;
   farmerStage3CooldownDays: number;
@@ -736,6 +764,7 @@ function parseGridSettingsBody(body: string, totalCapitalKrw: number): {
     gridFirstBuyNMultiplier?: unknown;
     maxFarmerStages?: unknown;
     farmerEntryPct?: unknown;
+    farmerEntryPcts?: unknown;
     farmerMax3dDrawdownPct?: unknown;
     farmerStage2CooldownDays?: unknown;
     farmerStage3CooldownDays?: unknown;
@@ -773,6 +802,7 @@ function parseGridSettingsBody(body: string, totalCapitalKrw: number): {
   const gridFirstBuyNMultiplier = Number(parsed.gridFirstBuyNMultiplier ?? DEFAULT_GRID_FIRST_BUY_N_MULTIPLIER);
   const maxFarmerStages = Number(parsed.maxFarmerStages);
   const farmerEntryPct = Number(parsed.farmerEntryPct);
+  const farmerEntryPcts = parseFarmerEntryPcts(parsed.farmerEntryPcts, maxFarmerStages, farmerEntryPct);
   const farmerMax3dDrawdownPct = Number(parsed.farmerMax3dDrawdownPct);
   const farmerStage2CooldownDays = Number(parsed.farmerStage2CooldownDays);
   const farmerStage3CooldownDays = Number(parsed.farmerStage3CooldownDays);
@@ -900,6 +930,7 @@ function parseGridSettingsBody(body: string, totalCapitalKrw: number): {
     gridFirstBuyNMultiplier,
     maxFarmerStages,
     farmerEntryPct,
+    farmerEntryPcts,
     farmerMax3dDrawdownPct,
     farmerStage2CooldownDays,
     farmerStage3CooldownDays,
@@ -1087,6 +1118,7 @@ async function updateGridSettings(body: string): Promise<{
     layers,
     maxFarmerStages: settings.maxFarmerStages,
     farmerEntryPct: settings.farmerEntryPct,
+    farmerEntryPcts: settings.farmerEntryPcts,
     farmerMax3dDrawdownPct: settings.farmerMax3dDrawdownPct,
     farmerStage2CooldownDays: settings.farmerStage2CooldownDays,
     farmerStage3CooldownDays: settings.farmerStage3CooldownDays,
@@ -1791,7 +1823,23 @@ function renderHtml(summary: DashboardSummary, options: ViewOptions): string {
     return pct === 0 ? "0.00%" : `-${pct.toFixed(2)}%`;
   };
   const maxFarmerStages = state?.maxFarmerStages ?? 3;
-  const farmerEntryPct = state?.farmerEntryPct ?? DEFAULT_FARMER_ENTRY_PCT;
+  const farmerEntryPcts = getFarmerEntryPcts(state, maxFarmerStages);
+  const farmerEntryPct = getFarmerEntryPctForStage(state, (state?.farmerStage ?? 0) + 1);
+  const farmerEntryPctSummary = farmerEntryPcts.length > 0
+    ? farmerEntryPcts.map((pct, index) => `${index + 1}차 -${(pct * 100).toFixed(2)}%`).join(" / ")
+    : `-${(farmerEntryPct * 100).toFixed(2)}%`;
+  const farmerEntryPctInputsHtml =
+    farmerEntryPcts.length > 0
+      ? farmerEntryPcts.map((pct, index) => `
+          <div class="field">
+            <label for="farmer-entry-pct-${index + 1}">농부 ${index + 1}차 진입 하락률(%)</label>
+            <input id="farmer-entry-pct-${index + 1}" class="farmer-entry-pct-stage" name="farmerEntryPcts" data-stage="${index + 1}" type="number" min="1" max="90" step="0.1" value="${(pct * 100).toFixed(2)}">
+          </div>`).join("")
+      : `
+          <div class="field">
+            <label for="farmer-entry-pct-1">농부 1차 진입 하락률(%)</label>
+            <input id="farmer-entry-pct-1" class="farmer-entry-pct-stage" name="farmerEntryPcts" data-stage="1" type="number" min="1" max="90" step="0.1" value="${(farmerEntryPct * 100).toFixed(2)}">
+          </div>`;
   const farmerMax3dDrawdownPct = state?.farmerMax3dDrawdownPct ?? DEFAULT_FARMER_MAX_3D_DRAWDOWN_PCT;
   const farmerStage2CooldownDays = state?.farmerStage2CooldownDays ?? DEFAULT_FARMER_STAGE2_COOLDOWN_DAYS;
   const farmerStage3CooldownDays = state?.farmerStage3CooldownDays ?? DEFAULT_FARMER_STAGE3_COOLDOWN_DAYS;
@@ -1838,7 +1886,7 @@ function renderHtml(summary: DashboardSummary, options: ViewOptions): string {
   const waitingLayerCount = summary.totals.waitingLayers + summary.totals.soldLayers;
   const farmerBasePrice = getFarmerBasePrice(state);
   const farmerBasePriceLabel = getFarmerBasePriceLabel(state);
-  const nextFarmerEntryPrice = getNextFarmerEntryPrice(state, farmerEntryPct);
+  const nextFarmerEntryPrice = getNextFarmerEntryPrice(state);
   const recoveryExitSignal = state?.recoveryExitSignal ?? null;
   const recoveryExitStatus = formatRecoveryExitStatusKo(recoveryExitSignal);
   const gridFirstBuyModeLabel =
@@ -1863,7 +1911,7 @@ function renderHtml(summary: DashboardSummary, options: ViewOptions): string {
         : "TP2 이상";
   const farmerToggleCards = [
     farmerUsePriceReachedFilter
-      ? strategyToggleCard("농부 진입 가격", `-${(farmerEntryPct * 100).toFixed(2)}%`, "목표가 도달 조건")
+      ? strategyToggleCard("농부 진입 가격", farmerEntryPctSummary, "차수별 목표가 도달 조건")
       : "",
     farmerUseLongTrendFilter ? strategyToggleCard("장기 추세", "MA200", "방향 조건") : "",
     farmerUseTurnoverRatioFilter ? strategyToggleCard("거래대금 증가", "1.50x / 1.20x", "20일 / 5일") : "",
@@ -2922,10 +2970,7 @@ function renderHtml(summary: DashboardSummary, options: ViewOptions): string {
             <label for="farmer-stages">농부 최대 매수 차수</label>
             <input id="farmer-stages" name="maxFarmerStages" type="number" min="0" max="10" step="1" value="${maxFarmerStages}">
           </div>
-          <div class="field">
-            <label for="farmer-entry-pct">농부 진입 하락률(%)</label>
-            <input id="farmer-entry-pct" name="farmerEntryPct" type="number" min="1" max="90" step="0.1" value="${(farmerEntryPct * 100).toFixed(2)}">
-          </div>
+          ${farmerEntryPctInputsHtml}
           <div class="field">
             <label for="farmer-max-3d-drawdown-pct">3일 급락 제한(%)</label>
             <input id="farmer-max-3d-drawdown-pct" name="farmerMax3dDrawdownPct" type="number" min="1" max="90" step="0.1" value="${Math.abs(farmerMax3dDrawdownPct * 100).toFixed(2)}">
@@ -3146,7 +3191,7 @@ function renderHtml(summary: DashboardSummary, options: ViewOptions): string {
     const gridFirstBuyNMultiplierInput = document.getElementById("grid-first-buy-n-multiplier");
     const gridLevelSettingsContainer = document.getElementById("grid-level-settings");
     const farmerStagesInput = document.getElementById("farmer-stages");
-    const farmerEntryPctInput = document.getElementById("farmer-entry-pct");
+    const farmerEntryPctInputs = Array.from(document.querySelectorAll(".farmer-entry-pct-stage"));
     const fundingPreview = document.getElementById("funding-preview");
     const strategyFundingSummary = document.getElementById("strategy-funding-summary");
     const strategyFixedSummary = document.getElementById("strategy-fixed-summary");
@@ -3303,10 +3348,23 @@ function renderHtml(summary: DashboardSummary, options: ViewOptions): string {
     }
 
     function getFarmerEntryPct(state) {
+      const stage = Math.max(1, Number(state && state.farmerStage || 0) + 1);
+      const stageValues = state && Array.isArray(state.farmerEntryPcts) ? state.farmerEntryPcts : [];
+      const stageValue = Number(stageValues[stage - 1]);
+      if (Number.isFinite(stageValue)) return stageValue;
       const stateValue = Number(state && state.farmerEntryPct);
       if (Number.isFinite(stateValue)) return stateValue;
-      const inputValue = Number(farmerEntryPctInput ? farmerEntryPctInput.value : NaN);
+      const input = farmerEntryPctInputs[stage - 1] || farmerEntryPctInputs[0];
+      const inputValue = Number(input ? input.value : NaN);
       return Number.isFinite(inputValue) ? inputValue / 100 : 0.1;
+    }
+
+    function getFarmerEntryPctSummaryFromInputs() {
+      const values = farmerEntryPctInputs.map((input, index) => {
+        const value = Number(input ? input.value : NaN);
+        return (index + 1) + "차 -" + (Number.isFinite(value) ? value : 0).toFixed(2) + "%";
+      });
+      return values.length > 0 ? values.join(" / ") : "-";
     }
 
     function getNextFarmerEntryPrice(state, farmerEntryPct) {
@@ -3587,7 +3645,7 @@ function renderHtml(summary: DashboardSummary, options: ViewOptions): string {
 
     function renderStrategyToggleSummary() {
       if (!strategyToggleSummary) return;
-      const farmerEntryPct = numberValue(farmerEntryPctInput, 0);
+      const farmerEntryPctSummary = getFarmerEntryPctSummaryFromInputs();
       const nMultiplier = numberValue(recoveryTurtleNMultiplierInput, 2);
       const lowBreakoutPeriod = Math.max(0, Math.floor(numberValue(recoveryTurtleLowBreakoutPeriodInput, 20)));
       const sliceOrderKrw = numberValue(recoveryTurtleSliceOrderInput, 0);
@@ -3597,7 +3655,7 @@ function renderHtml(summary: DashboardSummary, options: ViewOptions): string {
       const tp2ReturnPct = numberValue(tp2ReturnInput, 0);
       const tp2SellRatio = numberValue(tp2SellRatioInput, 0);
       const farmerCards = [
-        isChecked(farmerUsePriceReachedInput) ? strategyCard("농부 진입 가격", "-" + farmerEntryPct.toFixed(2) + "%", "목표가 도달 조건") : "",
+        isChecked(farmerUsePriceReachedInput) ? strategyCard("농부 진입 가격", farmerEntryPctSummary, "차수별 목표가 도달 조건") : "",
         isChecked(farmerUseLongTrendInput) ? strategyCard("장기 추세", "MA200", "방향 조건") : "",
         isChecked(farmerUseTurnoverRatioInput) ? strategyCard("거래대금 증가", "1.50x / 1.20x", "20일 / 5일") : "",
         isChecked(farmerUseMa5TrendInput) ? strategyCard("MA5 단기 추세", "MA5") : "",
@@ -3652,9 +3710,9 @@ function renderHtml(summary: DashboardSummary, options: ViewOptions): string {
     if (farmerStagesInput) {
       farmerStagesInput.addEventListener("input", renderFundingPreview);
     }
-    if (farmerEntryPctInput) {
-      farmerEntryPctInput.addEventListener("input", renderStrategyToggleSummary);
-    }
+    farmerEntryPctInputs.forEach((input) => {
+      input.addEventListener("input", renderStrategyToggleSummary);
+    });
     [
       farmerUsePriceReachedInput,
       farmerUseLongTrendInput,
@@ -4058,7 +4116,8 @@ function renderHtml(summary: DashboardSummary, options: ViewOptions): string {
       const gridFirstBuyMode = String(formData.get("gridFirstBuyMode") || "N_MULTIPLE");
       const gridFirstBuyNMultiplier = Number(formData.get("gridFirstBuyNMultiplier") || "0.5");
       const maxFarmerStages = Number(formData.get("maxFarmerStages"));
-      const farmerEntryPct = Number(formData.get("farmerEntryPct")) / 100;
+      const farmerEntryPcts = farmerEntryPctInputs.map((input) => Number(input.value) / 100);
+      const farmerEntryPct = farmerEntryPcts[0] ?? 0.15;
       const farmerMax3dDrawdownPct = -Math.abs(Number(formData.get("farmerMax3dDrawdownPct")) / 100);
       const farmerStage2CooldownDays = Number(formData.get("farmerStage2CooldownDays"));
       const farmerStage3CooldownDays = Number(formData.get("farmerStage3CooldownDays"));
@@ -4110,6 +4169,7 @@ function renderHtml(summary: DashboardSummary, options: ViewOptions): string {
             gridFirstBuyNMultiplier,
             maxFarmerStages,
             farmerEntryPct,
+            farmerEntryPcts,
             farmerMax3dDrawdownPct,
             farmerStage2CooldownDays,
             farmerStage3CooldownDays,

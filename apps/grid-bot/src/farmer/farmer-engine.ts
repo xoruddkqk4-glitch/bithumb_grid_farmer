@@ -255,6 +255,7 @@ export class FarmerEngine {
         recoveryPositionValueKrw: sizing.recoveryPositionValueKrw,
         lastBuyPrice: getFarmerLastBuyPrice(state),
         farmerBasePrice: getFarmerLastBuyPrice(state),
+        farmerEntryPct: getFarmerEntryPctForStage(state, signal.stage),
         nextFarmerEntryPrice: getNextFarmerEntryPrice(state),
         indicators,
       },
@@ -295,8 +296,17 @@ function getFarmerLastBuyPrice(state: BotState): number | null {
 function getNextFarmerEntryPrice(state: BotState): number | null {
   const lastBuyPrice = getFarmerLastBuyPrice(state);
   if (lastBuyPrice == null) return null;
-  const entryPct = state.farmerEntryPct ?? DEFAULT_FARMER_ENTRY_PCT;
+  const stage = state.farmerStage + 1;
+  const entryPct = getFarmerEntryPctForStage(state, stage);
   return lastBuyPrice * (1 - entryPct);
+}
+
+function getFarmerEntryPctForStage(state: BotState, stage: number): number {
+  const stageEntryPct = state.farmerEntryPcts?.[stage - 1];
+  if (stageEntryPct != null && Number.isFinite(stageEntryPct) && stageEntryPct > 0) {
+    return stageEntryPct;
+  }
+  return state.farmerEntryPct ?? DEFAULT_FARMER_ENTRY_PCT;
 }
 
 function shouldAppendSignal(previous: FarmerSignalState | null, next: FarmerSignalState): boolean {

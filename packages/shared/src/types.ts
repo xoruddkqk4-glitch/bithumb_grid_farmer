@@ -125,6 +125,7 @@ export interface BotState {
   farmerStage: number;
   maxFarmerStages?: number;
   farmerEntryPct?: number;
+  farmerEntryPcts?: number[];
   farmerMax3dDrawdownPct?: number;
   farmerStage2CooldownDays?: number;
   farmerStage3CooldownDays?: number;
